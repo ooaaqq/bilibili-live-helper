@@ -9,7 +9,6 @@ from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 from yaml.resolver import BaseResolver
 
-
 ROOT_FIELDS = {
     "include_uids",
     "watch_uids",
@@ -85,7 +84,7 @@ def load_settings(path: Path) -> Settings:
     except yaml.YAMLError as error:
         raise ValueError(f"Invalid YAML configuration: {error}") from error
     if not isinstance(raw, dict):
-        raise ValueError("Configuration root must be a YAML mapping")
+        raise TypeError("Configuration root must be a YAML mapping")
     _reject_unknown(raw, ROOT_FIELDS, "configuration")
 
     include_uids = _uid_list(raw.get("include_uids"), "include_uids", required=True)
@@ -131,11 +130,11 @@ def _parse_ntfy(value: Any) -> NtfyConfig | None:
     if value is None:
         return None
     if not isinstance(value, dict):
-        raise ValueError("ntfy must be a YAML mapping")
+        raise TypeError("ntfy must be a YAML mapping")
     _reject_unknown(value, {"endpoint", "token"}, "ntfy")
     endpoint = value.get("endpoint")
     if not isinstance(endpoint, str):
-        raise ValueError("ntfy.endpoint must be a URL")
+        raise TypeError("ntfy.endpoint must be a URL")
     parsed = urlsplit(endpoint)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("ntfy.endpoint must be an HTTP(S) URL")

@@ -2,8 +2,8 @@ import pytest
 from curl_cffi.requests.errors import RequestsError
 
 from bilibili_live_helper.notify import (
-    NtfyNotifier,
     NotificationError,
+    NtfyNotifier,
     validate_sequence_id,
 )
 

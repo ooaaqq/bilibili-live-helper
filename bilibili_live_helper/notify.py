@@ -4,13 +4,12 @@ import re
 import time
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from typing import Protocol
+from typing import Protocol, Self
 
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.errors import RequestsError
 
 from .state import AppState, OutboxMessage, StateStore
-
 
 SEQUENCE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,80}")
 
@@ -31,7 +30,7 @@ class NtfyNotifier(AbstractAsyncContextManager["NtfyNotifier"]):
         self.token = token
         self.session: AsyncSession | None = None
 
-    async def __aenter__(self) -> "NtfyNotifier":
+    async def __aenter__(self) -> Self:
         self.session = AsyncSession(max_clients=1, timeout=10, trust_env=True)
         return self
 

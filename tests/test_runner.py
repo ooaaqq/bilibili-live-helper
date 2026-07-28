@@ -17,7 +17,6 @@ from bilibili_live_helper.runner import (
 )
 from bilibili_live_helper.state import AppState, RoomProgress, StateStore, WatchProgress
 
-
 NOW = datetime(2026, 7, 11, 12, tzinfo=SHANGHAI)
 
 

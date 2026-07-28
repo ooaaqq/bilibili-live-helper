@@ -3,10 +3,9 @@ import logging
 import math
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
-
 
 STATE_VERSION = 2
 WATCH_STATUSES = {
@@ -136,7 +135,7 @@ class StateStore:
             raise RuntimeError(f"Unable to save state file: {error}") from error
 
     def _quarantine(self) -> Path:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         quarantine = self.path.with_name(f"{self.path.name}.corrupt-{timestamp}")
         try:
             self.path.replace(quarantine)
@@ -260,7 +259,7 @@ def _uid_key(value: str) -> int:
 def _string(value: dict[str, Any], field: str) -> str:
     item = value.get(field)
     if not isinstance(item, str):
-        raise ValueError(f"{field} must be a string")
+        raise TypeError(f"{field} must be a string")
     return item
 
 
@@ -288,7 +287,7 @@ def _non_negative_int(value: dict[str, Any], field: str) -> int:
 def _boolean(value: dict[str, Any], field: str) -> bool:
     item = value.get(field)
     if not isinstance(item, bool):
-        raise ValueError(f"{field} must be a boolean")
+        raise TypeError(f"{field} must be a boolean")
     return item
 
 

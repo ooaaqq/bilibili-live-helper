@@ -7,8 +7,9 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, time as clock_time
-from typing import Any
+from datetime import datetime
+from datetime import time as clock_time
+from typing import Any, Self
 from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,6 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.errors import RequestsError
 
 from .models import LiveRoom
-
 
 APP_KEY = "4409e2ce8ffd12b8"
 APP_SECRET = "59b43e04ad6965f34319062b478f83dd"
@@ -68,7 +68,7 @@ class BilibiliClient:
         self._request_lock = asyncio.Lock()
         self._next_request_at = 0.0
 
-    async def __aenter__(self) -> "BilibiliClient":
+    async def __aenter__(self) -> Self:
         self.session = AsyncSession(max_clients=1, impersonate="chrome131")
         try:
             await self.login()
