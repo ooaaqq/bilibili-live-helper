@@ -45,12 +45,13 @@
         in
         (pkgs.callPackage pyproject-nix.build.packages {
           python = pkgs.python314;
-        }).overrideScope (
-          lib.composeManyExtensions [
-            pyproject-build-systems.overlays.wheel
-            overlay
-          ]
-        )
+        }).overrideScope
+          (
+            lib.composeManyExtensions [
+              pyproject-build-systems.overlays.wheel
+              overlay
+            ]
+          )
       );
     in
     {
@@ -72,5 +73,7 @@
           };
         }
       );
+
+      formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
     };
 }

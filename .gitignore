@@ -10,8 +10,13 @@ access_key
 *.tmp
 .venv
 venv/
+.direnv/
 .idea/
 *.swp
 *.lnk
 *.bat
 *.json
+
+# Keep the small, shareable workspace configuration under version control.
+!.vscode/
+!.vscode/settings.json
