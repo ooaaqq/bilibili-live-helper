@@ -22,6 +22,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest -p no:cacheprovider
       - run: uv run ruff check . --no-cache
+      - run: uv run ruff format --check . --no-cache
 
   nix:
     runs-on: ubuntu-latest
