@@ -49,10 +49,8 @@ ntfy messages first enter the same persistent state file. Failed deliveries use
 exponential backoff and remain there until accepted. Custom sequence IDs contain
 only letters, numbers, underscores, and hyphens.
 
-The current version-1 state reader is backward compatible with files written
-before attempt and second-based watch tracking were added. An invalid or
-unsupported state file is moved aside as `state.json.corrupt-TIMESTAMP` so it
-cannot permanently block polling.
+An invalid or unsupported state file is moved aside as
+`state.json.corrupt-TIMESTAMP` so it cannot permanently block polling.
 
 ## Configuration
 

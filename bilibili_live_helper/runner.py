@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from .bilibili import BilibiliError, HeartbeatSession
 from .config import Settings
 from .models import LiveRoom
-from .notify import NotificationPublisher, validate_sequence_id
+from .notify import NotificationPublisher, PersistentOutbox
 from .state import AppState, OutboxMessage, RoomProgress, StateStore, WatchProgress
 
 
@@ -73,40 +73,62 @@ class LiveTaskRunner:
         )
         self.rollover_lock = asyncio.Lock()
         self.wake_event = asyncio.Event()
-        self.outbox_event = asyncio.Event()
+        self.outbox = (
+            PersistentOutbox(
+                notifier,
+                state_store,
+                lambda: self.state,
+                wall_time=wall_time,
+                logger=self.logger,
+            )
+            if notifier
+            else None
+        )
+        self.fatal_error: asyncio.Future[None] | None = None
         self.stopping = False
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         try:
             try:
+                self.fatal_error = asyncio.get_running_loop().create_future()
                 async with asyncio.TaskGroup() as tasks:
                     tasks.create_task(
                         self._poll_loop(stop_event), name="live-state-poller"
                     )
-                    tasks.create_task(self._outbox_loop(), name="notification-outbox")
+                    if self.outbox:
+                        tasks.create_task(self.outbox.run(), name="notification-outbox")
                     tasks.create_task(self._midnight_loop(), name="midnight-rollover")
                     tasks.create_task(
                         self._stop_on_request(stop_event), name="stop-request"
+                    )
+                    tasks.create_task(
+                        self._raise_background_failure(), name="background-failure"
                     )
             except* _StopRequested:
                 pass
         finally:
             self.stopping = True
             await self.shutdown()
+            self.fatal_error = None
 
     async def run_once(self) -> None:
         try:
             await self._refresh_once()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except BilibiliError:
             await self._suspend_live_tasks()
             raise
 
     async def _refresh_once(self) -> None:
-        await self._ensure_day(self.now().date())
+        refresh_day = self.now().date()
+        await self._ensure_day(refresh_day)
         previous_live = set(self.live_rooms)
         rooms = await self.client.discover_live_rooms(self.settings.include_uids)
+        await self._ensure_day(self.now().date())
+        if self.state.day != refresh_day:
+            self.wake_event.set()
+            return
         self.live_rooms = {room.anchor_id: room for room in rooms}
         self.state.last_successful_poll_at = self.wall_time()
         self.state_store.save(self.state)
@@ -139,7 +161,7 @@ class LiveTaskRunner:
                 await self.run_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except BilibiliError:
                 self.logger.exception(
                     "Live-state refresh failed; retrying on the next poll"
                 )
@@ -169,20 +191,9 @@ class LiveTaskRunner:
         self.state_store.save(self.state)
 
     async def _run_automation(self, room: LiveRoom, task_day: date) -> None:
-        results = await asyncio.gather(
-            self._run_likes(room, task_day),
-            self._run_danmaku(room, task_day),
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, BaseException) and not isinstance(
-                result, asyncio.CancelledError
-            ):
-                self.logger.error(
-                    "Unexpected automation error for %s: %s",
-                    _streamer(room),
-                    _safe_error(result),
-                )
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(self._run_likes(room, task_day))
+            tasks.create_task(self._run_danmaku(room, task_day))
         progress = self._current_room_progress(task_day, room.anchor_id)
         if progress and self._automation_complete(progress):
             if not self._automation_uncertain(progress):
@@ -207,8 +218,8 @@ class LiveTaskRunner:
                 await self.client.like(room, self.settings.like_clicks_per_request)
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
-                ambiguous = _is_ambiguous(error)
+            except BilibiliError as error:
+                ambiguous = error.ambiguous
                 if not ambiguous:
                     progress.like_attempts -= 1
                 title = (
@@ -239,6 +250,8 @@ class LiveTaskRunner:
             if not self._is_live(task_day, room.anchor_id):
                 return
             await self.danmaku_gate.wait()
+            if not self._is_live(task_day, room.anchor_id):
+                return
             progress.danmaku_attempts += 1
             progress.updated_at = self.wall_time()
             self.state_store.save(self.state)
@@ -246,8 +259,8 @@ class LiveTaskRunner:
                 message = await self.client.send_danmaku(room)
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
-                ambiguous = _is_ambiguous(error)
+            except BilibiliError as error:
+                ambiguous = error.ambiguous
                 if not ambiguous:
                     progress.danmaku_attempts -= 1
                 title = (
@@ -339,8 +352,8 @@ class LiveTaskRunner:
                 await self.client.heartbeat(room, session, watch_seconds)
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
-                ambiguous = _is_ambiguous(error)
+            except BilibiliError as error:
+                ambiguous = error.ambiguous
                 if not ambiguous:
                     progress.watch_seconds_attempted -= watch_seconds
                 progress.status = "pending"
@@ -408,6 +421,7 @@ class LiveTaskRunner:
             self.logger.error(
                 "Watch task failed for UID %s: %s", anchor_id, _safe_error(error)
             )
+            self._fail_background(error)
         progress = self.state.watches.get(anchor_id)
         if not progress or progress.status != "pending":
             self.wake_event.set()
@@ -419,6 +433,7 @@ class LiveTaskRunner:
             self.logger.error(
                 "Automation task failed for UID %s: %s", anchor_id, _safe_error(error)
             )
+            self._fail_background(error)
 
     async def _ensure_day(self, current_day: date) -> None:
         if current_day != self.state.day:
@@ -439,8 +454,8 @@ class LiveTaskRunner:
             for progress in self.state.watches.values():
                 if progress.status in {"pending", "running"}:
                     progress.status = "day_ended"
-            if self.notifier:
-                self._put_outbox(
+            if self.outbox:
+                self.outbox.queue(
                     OutboxMessage(
                         sequence_id=f"bilibili-watch-{old_day.isoformat()}",
                         title="Daily watch summary",
@@ -456,7 +471,8 @@ class LiveTaskRunner:
             self.state = AppState(day=new_day, outbox=outbox)
             self.live_rooms.clear()
             self.state_store.save(self.state)
-            self.outbox_event.set()
+            if self.outbox:
+                self.outbox.wake()
             self.wake_event.set()
             self.logger.info("Rolled daily task state from %s to %s", old_day, new_day)
 
@@ -571,8 +587,8 @@ class LiveTaskRunner:
     def _queue_notification(
         self, *, sequence_id: str, title: str, message: str, tags: str
     ) -> None:
-        if self.notifier:
-            self._put_outbox(
+        if self.outbox:
+            self.outbox.queue(
                 OutboxMessage(
                     sequence_id=sequence_id,
                     title=title,
@@ -580,54 +596,16 @@ class LiveTaskRunner:
                     tags=tags,
                 )
             )
-            self.outbox_event.set()
         self.state_store.save(self.state)
 
-    def _put_outbox(self, message: OutboxMessage) -> None:
-        validate_sequence_id(message.sequence_id)
-        self.state.outbox.setdefault(message.sequence_id, message)
-
-    async def _outbox_loop(self) -> None:
-        while True:
-            await self._flush_outbox_once()
-            self.outbox_event.clear()
-            try:
-                await asyncio.wait_for(self.outbox_event.wait(), timeout=30)
-            except TimeoutError:
-                pass
-
-    async def _flush_outbox_once(self) -> None:
-        if not self.notifier:
+    async def _raise_background_failure(self) -> None:
+        if self.fatal_error is None:
             return
-        for sequence_id, pending in list(self.state.outbox.items()):
-            if pending.next_attempt_at > self.wall_time():
-                continue
-            try:
-                await self.notifier.publish(
-                    pending.title,
-                    pending.message,
-                    tags=pending.tags,
-                    sequence_id=pending.sequence_id,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                pending.attempts += 1
-                pending.next_attempt_at = self.wall_time() + min(
-                    900, 30 * 2 ** min(pending.attempts - 1, 5)
-                )
-                self.state_store.save(self.state)
-                self.logger.warning(
-                    "Notification %s remains in outbox after %s: %s",
-                    sequence_id,
-                    pending.attempts,
-                    type(error).__name__,
-                )
-                continue
-            if self.state.outbox.get(sequence_id) is pending:
-                self.state.outbox.pop(sequence_id, None)
-                self.state_store.save(self.state)
-                self.logger.info("Notification %s delivered", sequence_id)
+        await self.fatal_error
+
+    def _fail_background(self, error: BaseException) -> None:
+        if self.fatal_error and not self.fatal_error.done():
+            self.fatal_error.set_exception(error)
 
     async def _wait_for_next_poll(self, stop_event: asyncio.Event) -> None:
         stop_waiter = asyncio.create_task(stop_event.wait())
@@ -655,8 +633,8 @@ class MinimumInterval:
         async with self.lock:
             now = time.monotonic()
             scheduled_at = max(now, self.next_available)
+            await self.sleep(max(0.0, scheduled_at - now))
             self.next_available = scheduled_at + self.interval_seconds
-        await self.sleep(max(0.0, scheduled_at - now))
 
 
 def _streamer(room: LiveRoom | RoomProgress) -> str:
@@ -686,10 +664,6 @@ def _watch_summary(
 def _safe_error(error: Exception) -> str:
     value = str(error).strip()
     return value if value else type(error).__name__
-
-
-def _is_ambiguous(error: Exception) -> bool:
-    return not isinstance(error, BilibiliError) or error.ambiguous
 
 
 def _format_minutes(seconds: int) -> str:

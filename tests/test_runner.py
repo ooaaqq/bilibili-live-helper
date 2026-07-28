@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import replace
 from datetime import date, datetime
 
@@ -7,7 +8,13 @@ import pytest
 from bilibili_live_helper.bilibili import BilibiliError, HeartbeatSession
 from bilibili_live_helper.config import Settings
 from bilibili_live_helper.models import LiveRoom
-from bilibili_live_helper.runner import SHANGHAI, LiveTaskRunner, _watch_summary
+from bilibili_live_helper.notify import NotificationError
+from bilibili_live_helper.runner import (
+    SHANGHAI,
+    LiveTaskRunner,
+    MinimumInterval,
+    _watch_summary,
+)
 from bilibili_live_helper.state import AppState, RoomProgress, StateStore, WatchProgress
 
 
@@ -49,7 +56,7 @@ class FakeNotifier:
     async def publish(self, title, message, *, tags, sequence_id):
         self.calls += 1
         if self.calls <= self.failures:
-            raise RuntimeError("temporary failure")
+            raise NotificationError("temporary failure")
         self.messages.append((title, message, tags, sequence_id))
 
 
@@ -128,7 +135,14 @@ async def test_restart_resumes_only_remaining_batches(tmp_path):
             day=NOW.date(),
             rooms={
                 1: RoomProgress(
-                    1, 101, "Alpha", likes_sent=1, danmaku_sent=1, updated_at=1
+                    1,
+                    101,
+                    "Alpha",
+                    likes_sent=1,
+                    like_attempts=1,
+                    danmaku_sent=1,
+                    danmaku_attempts=1,
+                    updated_at=1,
                 )
             },
         )
@@ -167,9 +181,21 @@ async def test_watch_priority_uses_configured_order(tmp_path):
             day=NOW.date(),
             rooms={
                 1: RoomProgress(
-                    1, 101, "Alpha", likes_sent=1, notification_queued=True
+                    1,
+                    101,
+                    "Alpha",
+                    likes_sent=1,
+                    like_attempts=1,
+                    notification_queued=True,
                 ),
-                2: RoomProgress(2, 202, "Beta", likes_sent=1, notification_queued=True),
+                2: RoomProgress(
+                    2,
+                    202,
+                    "Beta",
+                    likes_sent=1,
+                    like_attempts=1,
+                    notification_queued=True,
+                ),
             },
         )
     )
@@ -215,10 +241,17 @@ async def test_rollover_keeps_outbox_and_queues_watch_summary(tmp_path):
     store.save(
         AppState(
             day=NOW.date(),
-            rooms={1: RoomProgress(1, 101, "Alpha", likes_sent=1)},
+            rooms={1: RoomProgress(1, 101, "Alpha", likes_sent=1, like_attempts=1)},
             watches={
                 1: WatchProgress(
-                    1, 101, "Alpha", heartbeat_count=7, status="pending", updated_at=1
+                    1,
+                    101,
+                    "Alpha",
+                    heartbeat_count=7,
+                    watched_seconds=420,
+                    watch_seconds_attempted=420,
+                    status="pending",
+                    updated_at=1,
                 )
             },
         )
@@ -265,6 +298,90 @@ async def test_rollover_cancels_old_day_work_before_reset(tmp_path):
     assert not runner.state.rooms
 
 
+@pytest.mark.asyncio
+async def test_refresh_discards_a_snapshot_that_crosses_midnight(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    clock = [NOW]
+
+    class SlowRefreshClient(FakeClient):
+        async def discover_live_rooms(self, anchor_ids):
+            started.set()
+            await release.wait()
+            return await super().discover_live_rooms(anchor_ids)
+
+    runner = LiveTaskRunner(
+        SlowRefreshClient(),
+        _settings(like_request_count=1, danmaku_count=0),
+        StateStore(tmp_path / "state.json"),
+        sleep=_no_sleep,
+        now=lambda: clock[0],
+        wall_time=lambda: 100,
+    )
+    refresh = asyncio.create_task(runner.run_once())
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    clock[0] = datetime(2026, 7, 12, 0, tzinfo=SHANGHAI)
+    await runner._rollover(clock[0].date())
+    release.set()
+    await refresh
+
+    assert runner.state.day == date(2026, 7, 12)
+    assert not runner.live_rooms
+    assert not runner.automation_tasks
+
+
+@pytest.mark.asyncio
+async def test_danmaku_rechecks_liveness_after_waiting_for_global_gate(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_sleep(seconds):
+        if seconds > 0:
+            started.set()
+            await release.wait()
+
+    client = FakeClient()
+    runner = _runner(
+        tmp_path,
+        client,
+        _settings(like_request_count=1, danmaku_count=1),
+        sleep=blocking_sleep,
+    )
+    runner.danmaku_gate.next_available = time.monotonic() + 60
+
+    await runner.run_once()
+    automation = runner.automation_tasks[1]
+    await asyncio.wait_for(started.wait(), timeout=1)
+    client.rooms = []
+    await runner.run_once()
+    release.set()
+    await automation
+
+    assert client.danmakus == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_global_gate_does_not_reserve_a_future_slot():
+    started = asyncio.Event()
+
+    async def blocking_sleep(seconds):
+        assert seconds > 0
+        started.set()
+        await asyncio.Event().wait()
+
+    gate = MinimumInterval(3, blocking_sleep)
+    next_available = time.monotonic() + 60
+    gate.next_available = next_available
+    waiter = asyncio.create_task(gate.wait())
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    waiter.cancel()
+    await asyncio.gather(waiter, return_exceptions=True)
+
+    assert gate.next_available == next_available
+
+
 def test_running_watch_is_recovered_as_pending(tmp_path):
     store = StateStore(tmp_path / "state.json")
     store.save(
@@ -298,16 +415,17 @@ async def test_notification_outbox_retries_and_removes_only_after_success(tmp_pa
         tags="test_tube",
     )
 
-    await runner._flush_outbox_once()
+    assert runner.outbox is not None
+    await runner.outbox.flush_once()
     pending = runner.state.outbox["bilibili-test"]
     assert pending.attempts == 1
     assert pending.next_attempt_at == 130
 
-    await runner._flush_outbox_once()
+    await runner.outbox.flush_once()
     assert notifier.calls == 1
 
     clock[0] = 130
-    await runner._flush_outbox_once()
+    await runner.outbox.flush_once()
     assert "bilibili-test" not in runner.state.outbox
     assert notifier.messages[0][3] == "bilibili-test"
 
@@ -492,11 +610,8 @@ async def test_definitive_like_rejection_is_retried_on_next_poll(tmp_path):
 @pytest.mark.asyncio
 async def test_background_worker_failure_stops_runner(tmp_path):
     class BrokenRunner(LiveTaskRunner):
-        async def _outbox_loop(self):
-            raise RuntimeError("worker failed")
-
         async def _midnight_loop(self):
-            await asyncio.Event().wait()
+            raise RuntimeError("worker failed")
 
     runner = BrokenRunner(
         FakeClient([]),
@@ -510,6 +625,26 @@ async def test_background_worker_failure_stops_runner(tmp_path):
         await runner.run_forever(asyncio.Event())
 
     assert any(isinstance(error, RuntimeError) for error in captured.value.exceptions)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_automation_failure_stops_runner(tmp_path):
+    class BrokenActionClient(FakeClient):
+        async def like(self, room, click_count):
+            raise RuntimeError("programming error")
+
+    runner = LiveTaskRunner(
+        BrokenActionClient(),
+        _settings(like_request_count=1, danmaku_count=0),
+        StateStore(tmp_path / "state.json"),
+        sleep=asyncio.sleep,
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(ExceptionGroup) as captured:
+        await runner.run_forever(asyncio.Event())
+
+    assert any(isinstance(error, ExceptionGroup) for error in captured.value.exceptions)
 
 
 @pytest.mark.asyncio

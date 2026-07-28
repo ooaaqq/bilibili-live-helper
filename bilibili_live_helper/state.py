@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 WATCH_STATUSES = {
     "pending",
     "running",
@@ -25,9 +25,9 @@ class RoomProgress:
     room_id: int
     anchor_name: str
     likes_sent: int = 0
-    like_attempts: int = -1
+    like_attempts: int = 0
     danmaku_sent: int = 0
-    danmaku_attempts: int = -1
+    danmaku_attempts: int = 0
     notification_queued: bool = False
     last_error: str | None = None
     updated_at: float = 0.0
@@ -35,10 +35,6 @@ class RoomProgress:
     def __post_init__(self) -> None:
         if self.likes_sent < 0 or self.danmaku_sent < 0:
             raise ValueError("Confirmed room progress cannot be negative")
-        if self.like_attempts == -1:
-            self.like_attempts = self.likes_sent
-        if self.danmaku_attempts == -1:
-            self.danmaku_attempts = self.danmaku_sent
         if self.like_attempts < self.likes_sent:
             raise ValueError("like_attempts cannot be less than likes_sent")
         if self.danmaku_attempts < self.danmaku_sent:
@@ -51,8 +47,8 @@ class WatchProgress:
     room_id: int
     anchor_name: str
     heartbeat_count: int = 0
-    watched_seconds: int = -1
-    watch_seconds_attempted: int = -1
+    watched_seconds: int = 0
+    watch_seconds_attempted: int = 0
     status: str = "pending"
     last_error: str | None = None
     updated_at: float = 0.0
@@ -60,10 +56,6 @@ class WatchProgress:
     def __post_init__(self) -> None:
         if self.heartbeat_count < 0:
             raise ValueError("heartbeat_count cannot be negative")
-        if self.watched_seconds == -1:
-            self.watched_seconds = self.heartbeat_count * 60
-        if self.watch_seconds_attempted == -1:
-            self.watch_seconds_attempted = self.watched_seconds
         if self.watched_seconds < 0:
             raise ValueError("watched_seconds cannot be negative")
         if self.watch_seconds_attempted < self.watched_seconds:
@@ -193,11 +185,9 @@ def _parse_state(value: Any) -> AppState:
 
 def _room_progress(value: dict[str, Any]) -> RoomProgress:
     likes_sent = _non_negative_int(value, "likes_sent")
-    like_attempts = _optional_non_negative_int(value, "like_attempts", likes_sent)
+    like_attempts = _non_negative_int(value, "like_attempts")
     danmaku_sent = _non_negative_int(value, "danmaku_sent")
-    danmaku_attempts = _optional_non_negative_int(
-        value, "danmaku_attempts", danmaku_sent
-    )
+    danmaku_attempts = _non_negative_int(value, "danmaku_attempts")
     if like_attempts < likes_sent:
         raise ValueError("like_attempts cannot be less than likes_sent")
     if danmaku_attempts < danmaku_sent:
@@ -221,12 +211,8 @@ def _watch_progress(value: dict[str, Any]) -> WatchProgress:
     if status not in WATCH_STATUSES:
         raise ValueError(f"Invalid watch status: {status}")
     heartbeat_count = _non_negative_int(value, "heartbeat_count")
-    watched_seconds = _optional_non_negative_int(
-        value, "watched_seconds", heartbeat_count * 60
-    )
-    watch_seconds_attempted = _optional_non_negative_int(
-        value, "watch_seconds_attempted", watched_seconds
-    )
+    watched_seconds = _non_negative_int(value, "watched_seconds")
+    watch_seconds_attempted = _non_negative_int(value, "watch_seconds_attempted")
     if watch_seconds_attempted < watched_seconds:
         raise ValueError("watch_seconds_attempted cannot be less than watched_seconds")
     return WatchProgress(
@@ -297,12 +283,6 @@ def _non_negative_int(value: dict[str, Any], field: str) -> int:
     if isinstance(item, bool) or not isinstance(item, int) or item < 0:
         raise ValueError(f"{field} must be a non-negative integer")
     return item
-
-
-def _optional_non_negative_int(value: dict[str, Any], field: str, default: int) -> int:
-    if field not in value:
-        return default
-    return _non_negative_int(value, field)
 
 
 def _boolean(value: dict[str, Any], field: str) -> bool:
