@@ -43,4 +43,5 @@ global_danmaku_interval_seconds: 3
 
 # Failed deliveries remain in the persistent outbox and are retried.
 ntfy:
-  endpoint: https://ntfy.ssvgg.com/notifications
+  server: https://ntfy.ssvgg.com
+  topic: notifications

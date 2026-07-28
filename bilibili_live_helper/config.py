@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,8 @@ ROOT_FIELDS = {
     "global_danmaku_interval_seconds",
     "ntfy",
 }
+
+NTFY_TOPIC_PATTERN = re.compile(r"[-_A-Za-z0-9]{1,64}")
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -56,7 +59,8 @@ UniqueKeyLoader.add_constructor(
 
 @dataclass(frozen=True)
 class NtfyConfig:
-    endpoint: str
+    server: str
+    topic: str
     token: str | None
 
 
@@ -131,19 +135,33 @@ def _parse_ntfy(value: Any) -> NtfyConfig | None:
         return None
     if not isinstance(value, dict):
         raise TypeError("ntfy must be a YAML mapping")
-    _reject_unknown(value, {"endpoint", "token"}, "ntfy")
-    endpoint = value.get("endpoint")
-    if not isinstance(endpoint, str):
-        raise TypeError("ntfy.endpoint must be a URL")
-    parsed = urlsplit(endpoint)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("ntfy.endpoint must be an HTTP(S) URL")
+    _reject_unknown(value, {"server", "topic", "token"}, "ntfy")
+    server = value.get("server")
+    if not isinstance(server, str):
+        raise TypeError("ntfy.server must be a URL")
+    server = server.strip().rstrip("/")
+    parsed = urlsplit(server)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("ntfy.server must be an HTTP(S) URL")
+    topic = value.get("topic")
+    if isinstance(topic, str):
+        topic = topic.strip()
+    if not isinstance(topic, str) or not NTFY_TOPIC_PATTERN.fullmatch(topic):
+        raise ValueError(
+            "ntfy.topic must contain 1-64 letters, numbers, underscores, or hyphens"
+        )
     token = value.get("token")
     if token is not None and not isinstance(token, str):
         raise ValueError("ntfy.token must be a string")
-    return NtfyConfig(
-        endpoint=endpoint.rstrip("/"), token=token.strip() if token else None
-    )
+    token = token.strip() if token else None
+    if token and not token.isascii():
+        raise ValueError("ntfy.token must contain only ASCII characters")
+    return NtfyConfig(server=server, topic=topic, token=token)
 
 
 def load_access_key(path: Path) -> str:

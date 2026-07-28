@@ -25,8 +25,9 @@ class NotificationPublisher(Protocol):
 
 
 class NtfyNotifier(AbstractAsyncContextManager["NtfyNotifier"]):
-    def __init__(self, endpoint: str, token: str | None = None):
-        self.endpoint = endpoint.rstrip("/")
+    def __init__(self, server: str, topic: str, token: str | None = None):
+        self.server = server.rstrip("/")
+        self.topic = topic
         self.token = token
         self.session: AsyncSession | None = None
 
@@ -45,15 +46,24 @@ class NtfyNotifier(AbstractAsyncContextManager["NtfyNotifier"]):
         if not self.session:
             raise RuntimeError("ntfy notifier is not started")
         validate_sequence_id(sequence_id)
-        headers = {"Title": title, "Tags": tags, "X-Sequence-ID": sequence_id}
+        payload = {
+            "topic": self.topic,
+            "title": title,
+            "message": message,
+            "tags": [tag.strip() for tag in tags.split(",") if tag.strip()],
+            "sequence_id": sequence_id,
+        }
+        headers: dict[str, str] = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             response = await self.session.post(
-                self.endpoint, data=message.encode(), headers=headers
+                self.server,
+                json=payload,
+                headers=headers,
             )
             response.raise_for_status()
-        except RequestsError as error:
+        except (RequestsError, UnicodeError) as error:
             raise NotificationError(
                 f"ntfy delivery failed: {type(error).__name__}"
             ) from error

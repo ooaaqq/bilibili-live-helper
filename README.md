@@ -73,6 +73,16 @@ belongs in `config.yaml`.
 The runner treats a Bilibili `code: 0` response as success. It deliberately does
 not add extra intimacy or like-count verification requests.
 
+Notifications use ntfy's JSON publish API. Configure the ntfy server and topic
+separately so titles and message bodies are sent as UTF-8 JSON, not HTTP headers:
+
+```yaml
+ntfy:
+  server: https://ntfy.example
+  topic: notifications
+  # token: optional-bearer-token
+```
+
 ## Run Locally
 
 Python 3.14 and uv are required.

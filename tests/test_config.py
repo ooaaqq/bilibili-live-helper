@@ -13,7 +13,8 @@ def test_loads_single_account_and_preserves_watch_priority(tmp_path: Path):
 watch_uids: [3, 1]
 poll_interval_seconds: 60
 ntfy:
-  endpoint: https://ntfy.example/notifications
+  server: https://ntfy.example
+  topic: notifications
   token: secret
 """,
     )
@@ -25,7 +26,27 @@ ntfy:
     assert settings.poll_interval_seconds == 60
     assert settings.like_clicks_per_request == 30
     assert settings.ntfy is not None
-    assert settings.ntfy.endpoint == "https://ntfy.example/notifications"
+    assert settings.ntfy.server == "https://ntfy.example"
+    assert settings.ntfy.topic == "notifications"
+
+
+@pytest.mark.parametrize(
+    ("ntfy", "message"),
+    [
+        ("server: https://ntfy.example\n  topic: invalid topic", "ntfy.topic"),
+        (
+            "server: https://ntfy.example/?token=bad\n  topic: notifications",
+            "ntfy.server",
+        ),
+    ],
+)
+def test_rejects_invalid_ntfy_configuration(
+    tmp_path: Path, ntfy: str, message: str
+):
+    path = _write_config(tmp_path, f"include_uids: [1]\nntfy:\n  {ntfy}\n")
+
+    with pytest.raises(ValueError, match=message):
+        load_settings(path)
 
 
 def test_checked_in_config_is_valid():

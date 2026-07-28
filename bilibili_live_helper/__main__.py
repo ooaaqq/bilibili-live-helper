@@ -39,7 +39,9 @@ async def run() -> None:
         )
         notifier = (
             await stack.enter_async_context(
-                NtfyNotifier(settings.ntfy.endpoint, settings.ntfy.token)
+                NtfyNotifier(
+                    settings.ntfy.server, settings.ntfy.topic, settings.ntfy.token
+                )
             )
             if settings.ntfy
             else None
