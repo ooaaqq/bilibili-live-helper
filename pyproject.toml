@@ -4,7 +4,6 @@ version = "2.0.0"
 description = "Single-account Bilibili live-stream task runner."
 requires-python = ">=3.14"
 dependencies = [
-    "aiohttp>=3.14.1",
     "curl-cffi>=0.15.0",
     "pyyaml>=6.0.3",
     "tzdata>=2025.2",

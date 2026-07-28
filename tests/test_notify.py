@@ -1,6 +1,11 @@
 import pytest
+from curl_cffi.requests.errors import RequestsError
 
-from bilibili_live_helper.notify import validate_sequence_id
+from bilibili_live_helper.notify import (
+    NtfyNotifier,
+    NotificationError,
+    validate_sequence_id,
+)
 
 
 @pytest.mark.parametrize(
@@ -17,3 +22,16 @@ def test_accepts_ntfy_safe_sequence_ids(sequence_id):
 def test_rejects_ntfy_unsafe_sequence_ids(sequence_id):
     with pytest.raises(ValueError):
         validate_sequence_id(sequence_id)
+
+
+@pytest.mark.asyncio
+async def test_notifier_wraps_transport_failures():
+    class FailingSession:
+        async def post(self, *_args, **_kwargs):
+            raise RequestsError("network failed")
+
+    notifier = NtfyNotifier("https://ntfy.example/topic")
+    notifier.session = FailingSession()
+
+    with pytest.raises(NotificationError, match="RequestException"):
+        await notifier.publish("Title", "Body", tags="eyes", sequence_id="daily-1")
