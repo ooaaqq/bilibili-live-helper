@@ -45,9 +45,7 @@ async def test_notifier_sends_utf8_payload_without_user_text_headers():
 
     class RecordingSession:
         def __init__(self):
-            self.request: (
-                tuple[str, dict[str, object], dict[str, str]] | None
-            ) = None
+            self.request: tuple[str, dict[str, object], dict[str, str]] | None = None
 
         async def post(self, url, *, json, headers):
             self.request = (url, json, headers)

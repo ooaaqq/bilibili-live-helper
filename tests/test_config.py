@@ -40,9 +40,7 @@ ntfy:
         ),
     ],
 )
-def test_rejects_invalid_ntfy_configuration(
-    tmp_path: Path, ntfy: str, message: str
-):
+def test_rejects_invalid_ntfy_configuration(tmp_path: Path, ntfy: str, message: str):
     path = _write_config(tmp_path, f"include_uids: [1]\nntfy:\n  {ntfy}\n")
 
     with pytest.raises(ValueError, match=message):
