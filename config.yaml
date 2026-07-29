@@ -11,7 +11,7 @@ include_uids:
   - 1203217682 # Zeyin Melody
   - 1669777785 # Luzao GOGO
   - 1795147802
-  - 1878154667
+  - 1878154667 # SiXiWanZi
   - 1660392980
   - 1900141897
   - 1217754423
@@ -28,7 +28,10 @@ like_interval_seconds: 60
 # priority whenever the slot becomes available.
 watch_uids:
   - 2132180406
+  - 1203217682
   - 1669777785
+  - 1795147802
+  - 401315430
   - 672328094
   - 672342685
   - 672353429
@@ -43,5 +46,5 @@ global_danmaku_interval_seconds: 3
 
 # Failed deliveries remain in the persistent outbox and are retried.
 ntfy:
-  server: https://ntfy.ssvgg.com
-  topic: notifications
+  server: http://127.0.0.1:2586
+  topic: inbox
