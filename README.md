@@ -15,6 +15,13 @@ When a whitelisted streamer is live, the runner independently starts:
 - ten Danmaku messages (`[花]` or `[比心]`), with a three-minute interval;
 - watching heartbeats when the UID is in `watch_uids`.
 
+The transition from offline to live also queues an ntfy notification whose
+title includes both the streamer name and current stream title:
+
+```text
+Title: 「Streamer name」 Live · Stream title
+```
+
 Only one watching task runs at a time. `watch_uids` is ordered: the first live,
 unfinished UID gets the slot whenever it becomes available. A live-state poll
 stops the current watching task after the streamer goes offline. `watch_minutes`
@@ -29,12 +36,14 @@ waiting for its next like interval.
 Likes and Danmaku do not wait for watching. After both finish, ntfy receives:
 
 ```text
-Title: 「Streamer name」 Automatic task completed
+Title: 「Streamer name」 Tasks done
 Body:  UID: 123456789
        300 live likes and 10 Danmaku sent.
 ```
 
-Watching is reported once at midnight in `Asia/Shanghai`.
+Uncertain and failed task titles include confirmed progress. Watching is
+reported once at midnight in `Asia/Shanghai`; the summary title includes
+attempted and completed streamer counts plus confirmed and uncertain minutes.
 
 ## State And Recovery
 

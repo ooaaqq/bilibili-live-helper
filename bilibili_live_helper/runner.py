@@ -65,6 +65,7 @@ class LiveTaskRunner:
         if recovered_watch:
             self.state_store.save(self.state)
         self.live_rooms: dict[int, LiveRoom] = {}
+        self.last_successful_live_uids: set[int] = set()
         self.automation_tasks: dict[int, asyncio.Task[None]] = {}
         self.watch_task: asyncio.Task[None] | None = None
         self.watch_uid: int | None = None
@@ -123,19 +124,21 @@ class LiveTaskRunner:
     async def _refresh_once(self) -> None:
         refresh_day = self.now().date()
         await self._ensure_day(refresh_day)
-        previous_live = set(self.live_rooms)
+        previous_live = self.last_successful_live_uids
         rooms = await self.client.discover_live_rooms(self.settings.include_uids)
         await self._ensure_day(self.now().date())
         if self.state.day != refresh_day:
             self.wake_event.set()
             return
         self.live_rooms = {room.anchor_id: room for room in rooms}
+        self.last_successful_live_uids = set(self.live_rooms)
         self.state.last_successful_poll_at = self.wall_time()
         self.state_store.save(self.state)
 
         for room in rooms:
             if room.anchor_id not in previous_live:
                 self.logger.info("Detected %s live", _streamer(room))
+                self._queue_live_notification(room)
             progress = self._room_progress(room)
             if self._automation_complete(progress):
                 self._queue_completion(progress)
@@ -364,7 +367,11 @@ class LiveTaskRunner:
                         f"bilibili-{self.state.day.isoformat()}-"
                         f"{progress.anchor_id}-watch-error"
                     ),
-                    title=f"「{progress.anchor_name}」 Watch heartbeat failed",
+                    title=(
+                        f"「{progress.anchor_name}」 Heartbeat failed | "
+                        f"Confirmed {_format_minutes(progress.watched_seconds)}/"
+                        f"{self.settings.watch_minutes} min"
+                    ),
                     message=f"UID: {progress.anchor_id}\n{progress.last_error}",
                     tags="warning",
                 )
@@ -455,12 +462,13 @@ class LiveTaskRunner:
                 if progress.status in {"pending", "running"}:
                     progress.status = "day_ended"
             if self.outbox:
+                watch_results = list(self.state.watches.values())
                 self.outbox.queue(
                     OutboxMessage(
                         sequence_id=f"bilibili-watch-{old_day.isoformat()}",
-                        title="Daily watch summary",
+                        title=_watch_summary_title(watch_results),
                         message=_watch_summary(
-                            self.state.watches.values(),
+                            watch_results,
                             old_day,
                             self.settings.watch_minutes,
                         ),
@@ -540,7 +548,10 @@ class LiveTaskRunner:
                 f"bilibili-{self.state.day.isoformat()}-"
                 f"{progress.anchor_id}-{phase}-error"
             ),
-            title=f"「{progress.anchor_name}」 {title}",
+            title=(
+                f"「{progress.anchor_name}」 {title} | "
+                f"{_automation_progress_title(progress, phase, self.settings)}"
+            ),
             message=f"UID: {progress.anchor_id}\n{progress.last_error}",
             tags="warning",
         )
@@ -576,12 +587,37 @@ class LiveTaskRunner:
                 f"{progress.anchor_id}-automation-complete"
             ),
             title=(
-                f"「{progress.anchor_name}」 Automatic task outcome uncertain"
+                f"「{progress.anchor_name}」 Tasks uncertain | "
+                f"Likes {progress.likes_sent * self.settings.like_clicks_per_request}/"
+                f"{self.settings.like_request_count * self.settings.like_clicks_per_request} | "
+                f"Danmaku {progress.danmaku_sent}/{self.settings.danmaku_count}"
                 if uncertain
-                else f"「{progress.anchor_name}」 Automatic task completed"
+                else f"「{progress.anchor_name}」 Tasks done"
             ),
             message=message,
             tags="warning" if uncertain else "white_check_mark",
+        )
+
+    def _queue_live_notification(self, room: LiveRoom) -> None:
+        if not self.notifier:
+            return
+        stream_title = " ".join(room.title.split())
+        title = f"「{room.anchor_name}」 Live"
+        if stream_title:
+            title += f" · {stream_title}"
+        message = (
+            f"UID: {room.anchor_id}\nRoom: https://live.bilibili.com/{room.room_id}"
+        )
+        if stream_title:
+            message += f"\nTitle: {stream_title}"
+        self._queue_notification(
+            sequence_id=(
+                f"bilibili-{self.state.day.isoformat()}-{room.anchor_id}-"
+                f"live-{int(self.wall_time() * 1000)}"
+            ),
+            title=title,
+            message=message,
+            tags="red_circle",
         )
 
     def _queue_notification(
@@ -659,6 +695,33 @@ def _watch_summary(
             detail += f", {progress.last_error}"
         lines.append(f"- {_streamer(progress)}: {detail}")
     return "\n".join(lines)
+
+
+def _watch_summary_title(results: Iterable[WatchProgress]) -> str:
+    values = list(results)
+    completed = sum(progress.status == "completed" for progress in values)
+    confirmed_seconds = sum(progress.watched_seconds for progress in values)
+    uncertain_seconds = sum(
+        progress.watch_seconds_attempted - progress.watched_seconds
+        for progress in values
+    )
+    title = (
+        f"Watch summary | Attempted {len(values)} | Completed {completed} | "
+        f"Confirmed {_format_minutes(confirmed_seconds)} min"
+    )
+    if uncertain_seconds:
+        title += f" | Uncertain {_format_minutes(uncertain_seconds)} min"
+    return title
+
+
+def _automation_progress_title(
+    progress: RoomProgress, phase: str, settings: Settings
+) -> str:
+    if phase == "like":
+        confirmed = progress.likes_sent * settings.like_clicks_per_request
+        target = settings.like_request_count * settings.like_clicks_per_request
+        return f"Likes {confirmed}/{target}"
+    return f"Danmaku {progress.danmaku_sent}/{settings.danmaku_count}"
 
 
 def _safe_error(error: Exception) -> str:

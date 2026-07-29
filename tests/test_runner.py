@@ -126,6 +126,75 @@ async def test_combined_notification_does_not_wait_for_watch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_live_notification_is_queued_once_per_live_transition(tmp_path):
+    clock = [100.0]
+    client = FakeClient()
+    runner = _runner(
+        tmp_path,
+        client,
+        _settings(like_request_count=1, danmaku_count=0),
+        notifier=FakeNotifier(),
+        wall_time=lambda: clock[0],
+    )
+
+    await runner.run_once()
+    await runner.automation_tasks[1]
+
+    first = runner.state.outbox["bilibili-2026-07-11-1-live-100000"]
+    assert first.title == "「Alpha」 Live · Live"
+    assert first.message == ("UID: 1\nRoom: https://live.bilibili.com/101\nTitle: Live")
+    assert first.tags == "red_circle"
+
+    await runner.run_once()
+    assert len([key for key in runner.state.outbox if "-live-" in key]) == 1
+
+    client.rooms = []
+    await runner.run_once()
+    clock[0] = 220.0
+    client.rooms = [LiveRoom(1, 101, "Alpha", "Second live", 9, 6)]
+    await runner.run_once()
+
+    assert (
+        runner.state.outbox["bilibili-2026-07-11-1-live-220000"].title
+        == "「Alpha」 Live · Second live"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_notification_is_not_repeated_after_failed_refresh(tmp_path):
+    clock = [100.0]
+
+    class FailingClient(FakeClient):
+        fail_refresh = False
+
+        async def discover_live_rooms(self, anchor_ids):
+            if self.fail_refresh:
+                raise BilibiliError("refresh failed")
+            return await super().discover_live_rooms(anchor_ids)
+
+    client = FailingClient()
+    runner = _runner(
+        tmp_path,
+        client,
+        _settings(like_request_count=1, danmaku_count=0),
+        notifier=FakeNotifier(),
+        wall_time=lambda: clock[0],
+    )
+
+    await runner.run_once()
+    await runner.automation_tasks[1]
+    client.fail_refresh = True
+    with pytest.raises(BilibiliError, match="refresh failed"):
+        await runner.run_once()
+
+    clock[0] = 220.0
+    client.fail_refresh = False
+    await runner.run_once()
+
+    assert len([key for key in runner.state.outbox if "-live-" in key]) == 1
+
+
+@pytest.mark.asyncio
 async def test_restart_resumes_only_remaining_batches(tmp_path):
     settings = _settings(like_request_count=2, danmaku_count=2)
     store = StateStore(tmp_path / "state.json")
@@ -165,6 +234,8 @@ async def test_restart_resumes_only_remaining_batches(tmp_path):
     assert runner.state.rooms[1].likes_sent == 2
     assert runner.state.rooms[1].danmaku_sent == 2
     assert runner.state.rooms[1].notification_queued
+    completion = runner.state.outbox["bilibili-2026-07-11-1-automation-complete"]
+    assert completion.title == "「Alpha」 Tasks done"
 
 
 @pytest.mark.asyncio
@@ -269,6 +340,9 @@ async def test_rollover_keeps_outbox_and_queues_watch_summary(tmp_path):
     assert not runner.state.rooms
     assert not runner.state.watches
     summary = runner.state.outbox["bilibili-watch-2026-07-11"]
+    assert summary.title == (
+        "Watch summary | Attempted 1 | Completed 0 | Confirmed 7 min"
+    )
     assert "Alpha (UID: 1): 7/150 confirmed minutes, day ended" in summary.message
 
 
@@ -569,8 +643,10 @@ async def test_ambiguous_like_is_reserved_and_not_repeated(tmp_path):
     assert progress.like_attempts == 1
     assert progress.likes_sent == 0
     assert "bilibili-2026-07-11-1-like-error" in runner.state.outbox
+    error = runner.state.outbox["bilibili-2026-07-11-1-like-error"]
+    assert error.title == "「Alpha」 Like task outcome uncertain | Likes 0/30"
     completion = runner.state.outbox["bilibili-2026-07-11-1-automation-complete"]
-    assert "outcome uncertain" in completion.title
+    assert completion.title == ("「Alpha」 Tasks uncertain | Likes 0/30 | Danmaku 0/0")
 
 
 @pytest.mark.asyncio
