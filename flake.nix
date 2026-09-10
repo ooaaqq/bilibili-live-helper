@@ -70,6 +70,8 @@
               (pythonSets.${system}.mkVirtualEnv "bilibili-live-helper-dev" workspace.deps.all)
               pkgs.uv
             ];
+
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
           };
         }
       );
