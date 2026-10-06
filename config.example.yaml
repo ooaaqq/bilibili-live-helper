@@ -1,0 +1,18 @@
+include_uids:
+  - 1
+poll_interval_seconds: 120
+request_timeout_seconds: 15
+api_interval_seconds: 1
+like_clicks_per_request: 30
+like_request_count: 10
+like_interval_seconds: 60
+watch_uids:
+  - 1
+watch_minutes: 150
+heartbeat_interval_seconds: 60
+danmaku_count: 10
+danmaku_interval_seconds: 180
+global_danmaku_interval_seconds: 3
+ntfy:
+  server: https://ntfy.example
+  topic: inbox

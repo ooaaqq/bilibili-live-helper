@@ -49,7 +49,7 @@ def test_rejects_invalid_ntfy_configuration(tmp_path: Path, ntfy: str, message: 
 
 def test_checked_in_config_is_valid():
     root = Path(__file__).parents[1]
-    load_settings(root / "config.yaml")
+    load_settings(root / "config.example.yaml")
 
 
 def test_rejects_removed_multi_account_format(tmp_path: Path):

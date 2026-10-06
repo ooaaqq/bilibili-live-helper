@@ -1,7 +1,11 @@
 name: CI
 on:
+  push:
+    branches: [master]
+    paths-ignore: ["**/*.md", "LICENSE"]
   pull_request:
     branches: [master]
+    paths-ignore: ["**/*.md", "LICENSE"]
 permissions:
   contents: read
 jobs:
@@ -9,11 +13,5 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-          prune-cache: true
-          python-version: "3.14"
-          version: "0.10.8"
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa
       - run: ./scripts/check.sh

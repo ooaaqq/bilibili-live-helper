@@ -20,3 +20,5 @@ venv/
 # Keep the small, shareable workspace configuration under version control.
 !.vscode/
 !.vscode/settings.json
+
+/config.yaml
