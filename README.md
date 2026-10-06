@@ -150,11 +150,13 @@ through `BILIBILI_LIVE_HELPER_CONFIG`,
 
 ## Development
 
+Enter the `infra` workspace environment, then run:
+
 ```bash
-uv run pytest -p no:cacheprovider
-uv run ruff check . --no-cache
-uv lock --check
+infra check bilibili-live-helper
 ```
 
-GitHub Actions also evaluates the Flake and builds the production package for
-every push and pull request to `master`.
+`scripts/check.sh` installs the locked dependencies, runs Python tests and checks
+the flake. Nix supplies the lint executable; the Python lock owns application and
+test dependencies. Pull requests run this check. Fleet builds the pinned production
+package as part of deployment.
