@@ -59,23 +59,28 @@
         default = pythonSets.${system}.mkVirtualEnv "bilibili-live-helper" workspace.deps.default;
       });
 
-      devShells = forAllSystems (
+      checks = forAllSystems (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
-          default = pkgs.mkShell {
-            packages = [
-              (pythonSets.${system}.mkVirtualEnv "bilibili-live-helper-dev" workspace.deps.all)
-              pkgs.uv
-            ];
-
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
-          };
+          lint =
+            pkgs.runCommand "live-helper-lint"
+              {
+                src = ./.;
+                nativeBuildInputs = [ pkgs.ruff ];
+              }
+              ''
+                cp -r "$src" source
+                chmod -R u+w source
+                cd source
+                ruff check . --no-cache
+                ruff format --check . --no-cache
+                touch "$out"
+              '';
         }
       );
-
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
     };
 }
