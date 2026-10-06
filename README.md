@@ -1,162 +1,51 @@
 # Bilibili Live Helper
 
-A single-account Bilibili live-stream task runner for a private whitelist. It
-has no HTTP server and exposes no port.
+单账户直播任务应用，不监听网络端口。使用 infra 工作区的开发环境。
 
-## Behavior
+## 配置与运行
 
-Every `poll_interval_seconds`, one public batch request resolves the configured
-UIDs into current room metadata and live status. The fan-medal panel is not used
-for discovery or validation; `include_uids` is the source of truth.
+修改 `config.yaml`：`include_uids` 是主播清单，`watch_uids` 是按优先级排列的观看清单，必须是前者的子集。
+参数含义和当前数值见配置文件。重复字段、重复 UID、未知参数和空主播清单会被拒绝。
+access key 从单独文件读取，不写入配置。
 
-When a whitelisted streamer is live, the runner independently starts:
-
-- ten 30-click like reports, with the configured interval;
-- ten Danmaku messages (`[花]` or `[比心]`), with a three-minute interval;
-- watching heartbeats when the UID is in `watch_uids`.
-
-The transition from offline to live also queues an ntfy notification whose
-title includes both the streamer name and current stream title:
-
-```text
-Title: 「Streamer name」 Live · Stream title
-```
-
-Only one watching task runs at a time. `watch_uids` is ordered: the first live,
-unfinished UID gets the slot whenever it becomes available. A live-state poll
-stops the current watching task after the streamer goes offline. `watch_minutes`
-is an exact duration target: the runner waits and accounts in seconds until it
-reaches `watch_minutes * 60`. Changing the heartbeat interval changes the number
-of requests, not the total watch duration.
-
-Like sequences for different rooms advance independently. Individual Bilibili
-requests are still serialized per account, but one room never holds a lock while
-waiting for its next like interval.
-
-Likes and Danmaku do not wait for watching. After both finish, ntfy receives:
-
-```text
-Title: 「Streamer name」 Tasks done
-Body:  UID: 123456789
-       300 live likes and 10 Danmaku sent.
-```
-
-Uncertain and failed task titles include confirmed progress. Watching is
-reported once at midnight in `Asia/Shanghai`; the summary title includes
-attempted and completed streamer counts plus confirmed and uncertain minutes.
-
-## State And Recovery
-
-State is written atomically before every side-effecting request and again after
-each confirmed response. A restart resumes only unfinished work for the current
-day. If a request times out after it may have reached Bilibili, that attempt is
-recorded as uncertain and is not repeated. Completion notifications distinguish
-confirmed work from uncertain attempts. At midnight, running work is stopped
-before the state changes to the new day.
-
-ntfy messages first enter the same persistent state file. Failed deliveries use
-exponential backoff and remain there until accepted. Custom sequence IDs contain
-only letters, numbers, underscores, and hyphens.
-
-An invalid or unsupported state file is moved aside as
-`state.json.corrupt-TIMESTAMP` so it cannot permanently block polling.
-
-## Configuration
-
-Edit the checked-in `config.yaml` directly. The public configuration is strict
-and supports exactly one account:
-
-```yaml
-include_uids:
-  - 123456789
-watch_uids:
-  - 123456789
-```
-
-`include_uids` must not be empty. Every `watch_uids` entry must also be in
-`include_uids`. Duplicate YAML keys, duplicate UIDs, and unknown fields are
-rejected. Like reports are limited to at most 300 clicks per request. The access
-key is read separately from `BILIBILI_LIVE_HELPER_ACCESS_KEY_FILE` and never
-belongs in `config.yaml`.
-
-The runner treats a Bilibili `code: 0` response as success. It deliberately does
-not add extra intimacy or like-count verification requests.
-
-Notifications use ntfy's JSON publish API. Configure the ntfy server and topic
-separately so titles and message bodies are sent as UTF-8 JSON, not HTTP headers:
-
-```yaml
-ntfy:
-  server: https://ntfy.example
-  topic: notifications
-  # token: optional-bearer-token
-```
-
-## Run Locally
-
-Python 3.14 and uv are required.
-
-```bash
-uv sync
+```sh
+uv sync --locked
 uv run python -m bilibili_live_helper
-```
-
-Local state defaults to `data/state.json`. Paths can be overridden for one run:
-
-```bash
-BILIBILI_LIVE_HELPER_CONFIG=/path/to/config.yaml \
-BILIBILI_LIVE_HELPER_ACCESS_KEY_FILE=/path/to/access_key \
-BILIBILI_LIVE_HELPER_STATE=/path/to/state.json \
-uv run python -m bilibili_live_helper
-```
-
-## NixOS Deployment
-
-Production deployment is a native NixOS service. The infrastructure repository
-pins this repository as a Flake input, stores only the access key as a
-per-machine SOPS credential, and runs the service with a dynamic user and a
-persistent `StateDirectory`. The remaining public configuration is Git-tracked.
-
-The package exposes three commands for the service manager:
-
-```text
-bilibili-live-helper
-bilibili-live-helper-check-config
-bilibili-live-helper-healthcheck
-```
-
-The service receives its configuration path, access-key file path, and state path
-through `BILIBILI_LIVE_HELPER_CONFIG`,
-`BILIBILI_LIVE_HELPER_ACCESS_KEY_FILE`, and
-`BILIBILI_LIVE_HELPER_STATE`. It does not listen on a network port.
-
-## API Design
-
-- Live discovery uses `Room/get_status_info_by_uids`, one request for the full
-  whitelist. It returns UID, room ID, name, area, title, and live status.
-- Public room and web Danmaku conventions were checked against
-  [`bilibili-api-python` 17.4.2](https://pypi.org/project/bilibili-api-python/).
-  That library does not expose the app-signed live-like or account watch-credit
-  endpoints used here, so it is a reference rather than a runtime dependency.
-- Account actions retain the app `access_key` signing path used by the working
-  like and Danmaku endpoints.
-- Watching uses the authenticated app `mobileHeartBeat`. The anonymous web
-  heartbeat used for live WebSocket connections is not an account watch-credit
-  substitute.
-- All individual Bilibili HTTP requests are serialized per account and separated
-  by at least `api_interval_seconds`. GET requests may retry. A definitive API
-  rejection leaves the attempt eligible for a later poll; an ambiguous POST
-  result consumes its durable reservation and is never sent again.
-
-## Development
-
-Enter the `infra` workspace environment, then run:
-
-```bash
 infra check bilibili-live-helper
 ```
 
-`scripts/check.sh` installs the locked dependencies, runs Python tests and checks
-the flake. Nix supplies the lint executable; the Python lock owns application and
-test dependencies. Pull requests run this check. Fleet builds the pinned production
-package as part of deployment.
+本地状态默认为 `data/state.json`。可通过环境变量指定路径：
+
+| 变量 | 用途 |
+| --- | --- |
+| `BILIBILI_LIVE_HELPER_CONFIG` | 配置文件 |
+| `BILIBILI_LIVE_HELPER_ACCESS_KEY_FILE` | access key 文件 |
+| `BILIBILI_LIVE_HELPER_STATE` | 状态文件 |
+
+ntfy 使用 JSON 发布接口，在 `config.yaml` 的 `ntfy` 中分别填写 server 和 topic，可设置 token。
+
+## 任务与状态
+
+每次轮询通过 `Room/get_status_info_by_uids` 批量获取直播状态，随后独立执行点赞、弹幕和观看任务。
+观看一次只运行一个任务，按 `watch_uids` 顺序分配空闲位置，下播后停止。
+观看目标按秒计时；心跳间隔只影响请求次数。不同直播间的点赞序列独立推进。
+
+账户请求串行执行，间隔由配置控制。GET 可重试；明确的 API 拒绝可在后续轮询重试。
+可能已送达的 POST 超时会记为不确定结果，不重复发送。响应 `code: 0` 视为成功。
+
+状态在副作用请求前和确认响应后原子保存。重启继续当天未完成任务，上海时间午夜停止旧任务并进入新一天。
+无效状态移至 `state.json.corrupt-TIMESTAMP`。ntfy 消息先进入持久队列，失败后退避重试。
+通知包含开播标题、点赞及弹幕完成进度和每日观看汇总，区分已确认与不确定结果。
+
+直播发现使用公开批量接口；点赞和弹幕保留 app access key 签名，观看使用认证的 `mobileHeartBeat`。
+公开弹幕接口参考 `bilibili-api-python`，它不是运行依赖。
+
+## 生产与检查
+
+fleet 的 flake 固定本仓库 revision，构建原生 NixOS 服务。公开配置来自本仓库，access key 由 SOPS 管理。
+服务使用动态用户和持久 `StateDirectory`，通过上述三个环境变量接收配置、凭据和状态路径。
+更新源码后，需在 fleet 更新固定 revision 才会部署。
+
+包提供 `bilibili-live-helper`、`bilibili-live-helper-check-config` 和 `bilibili-live-helper-healthcheck`。
+`scripts/check.sh` 安装锁定依赖、运行测试并检查 flake；PR 执行同一检查。
+Python 锁维护应用和测试依赖，Nix 提供工具；生产包由 fleet 构建。
