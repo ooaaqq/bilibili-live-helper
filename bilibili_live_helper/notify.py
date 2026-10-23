@@ -9,7 +9,8 @@ from typing import Protocol, Self
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.errors import RequestsError
 
-from .state import AppState, OutboxMessage, StateStore
+from .progress import AppState, OutboxMessage
+from .state import StateStore
 
 SEQUENCE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,80}")
 

@@ -1,6 +1,5 @@
 import asyncio
 import time
-from dataclasses import replace
 from datetime import date, datetime
 
 import pytest
@@ -9,13 +8,14 @@ from bilibili_live_helper.bilibili import BilibiliError, HeartbeatSession
 from bilibili_live_helper.config import Settings
 from bilibili_live_helper.models import LiveRoom
 from bilibili_live_helper.notify import NotificationError
+from bilibili_live_helper.progress import AppState, RoomProgress, WatchProgress
 from bilibili_live_helper.runner import (
     SHANGHAI,
     LiveTaskRunner,
     MinimumInterval,
     _watch_summary,
 )
-from bilibili_live_helper.state import AppState, RoomProgress, StateStore, WatchProgress
+from bilibili_live_helper.state import StateStore
 
 NOW = datetime(2026, 7, 11, 12, tzinfo=SHANGHAI)
 
@@ -203,9 +203,9 @@ async def test_restart_resumes_only_remaining_batches(tmp_path):
             day=NOW.date(),
             rooms={
                 1: RoomProgress(
-                    1,
-                    101,
-                    "Alpha",
+                    anchor_id=1,
+                    room_id=101,
+                    anchor_name="Alpha",
                     likes_sent=1,
                     like_attempts=1,
                     danmaku_sent=1,
@@ -251,17 +251,17 @@ async def test_watch_priority_uses_configured_order(tmp_path):
             day=NOW.date(),
             rooms={
                 1: RoomProgress(
-                    1,
-                    101,
-                    "Alpha",
+                    anchor_id=1,
+                    room_id=101,
+                    anchor_name="Alpha",
                     likes_sent=1,
                     like_attempts=1,
                     notification_queued=True,
                 ),
                 2: RoomProgress(
-                    2,
-                    202,
-                    "Beta",
+                    anchor_id=2,
+                    room_id=202,
+                    anchor_name="Beta",
                     likes_sent=1,
                     like_attempts=1,
                     notification_queued=True,
@@ -311,12 +311,20 @@ async def test_rollover_keeps_outbox_and_queues_watch_summary(tmp_path):
     store.save(
         AppState(
             day=NOW.date(),
-            rooms={1: RoomProgress(1, 101, "Alpha", likes_sent=1, like_attempts=1)},
+            rooms={
+                1: RoomProgress(
+                    anchor_id=1,
+                    room_id=101,
+                    anchor_name="Alpha",
+                    likes_sent=1,
+                    like_attempts=1,
+                )
+            },
             watches={
                 1: WatchProgress(
-                    1,
-                    101,
-                    "Alpha",
+                    anchor_id=1,
+                    room_id=101,
+                    anchor_name="Alpha",
                     heartbeat_count=7,
                     watched_seconds=420,
                     watch_seconds_attempted=420,
@@ -460,7 +468,15 @@ def test_running_watch_is_recovered_as_pending(tmp_path):
     store.save(
         AppState(
             day=NOW.date(),
-            watches={1: WatchProgress(1, 101, "Alpha", status="running", updated_at=1)},
+            watches={
+                1: WatchProgress(
+                    anchor_id=1,
+                    room_id=101,
+                    anchor_name="Alpha",
+                    status="running",
+                    updated_at=1,
+                )
+            },
         )
     )
 
@@ -769,7 +785,7 @@ def _settings(**changes) -> Settings:
         global_danmaku_interval_seconds=1,
         ntfy=None,
     )
-    return replace(defaults, **changes)
+    return Settings.model_validate(defaults.model_dump() | changes)
 
 
 def _runner(

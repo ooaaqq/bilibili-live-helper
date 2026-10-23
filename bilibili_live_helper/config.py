@@ -1,33 +1,13 @@
 import os
-import re
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 from yaml.resolver import BaseResolver
-
-ROOT_FIELDS = {
-    "include_uids",
-    "watch_uids",
-    "poll_interval_seconds",
-    "request_timeout_seconds",
-    "api_interval_seconds",
-    "like_clicks_per_request",
-    "like_request_count",
-    "like_interval_seconds",
-    "watch_minutes",
-    "heartbeat_interval_seconds",
-    "danmaku_count",
-    "danmaku_interval_seconds",
-    "global_danmaku_interval_seconds",
-    "ntfy",
-}
-
-NTFY_TOPIC_PATTERN = re.compile(r"[-_A-Za-z0-9]{1,64}")
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -57,111 +37,94 @@ UniqueKeyLoader.add_constructor(
 )
 
 
-@dataclass(frozen=True)
-class NtfyConfig:
+class NtfyConfig(BaseModel):
+    model_config = ConfigDict(
+        strict=True, extra="forbid", frozen=True, hide_input_in_errors=True
+    )
     server: str
-    topic: str
-    token: str | None
+    topic: Annotated[str, Field(pattern=r"^[-_A-Za-z0-9]{1,64}$")]
+    token: str | None = Field(default=None, repr=False)
+
+    @field_validator("server")
+    @classmethod
+    def server_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "ntfy.server must be an HTTP(S) URL without credentials, query or fragment"
+            )
+        return value
+
+    @field_validator("token")
+    @classmethod
+    def token_header(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not value.isascii() or any(ord(c) < 32 or ord(c) == 127 for c in value)
+        ):
+            raise ValueError("ntfy.token must contain printable ASCII characters")
+        return value.strip() or None if value is not None else None
 
 
-@dataclass(frozen=True)
-class Settings:
-    include_uids: tuple[int, ...]
-    watch_uids: tuple[int, ...]
-    poll_interval_seconds: int
-    request_timeout_seconds: int
-    api_interval_seconds: int
-    like_clicks_per_request: int
-    like_request_count: int
-    like_interval_seconds: int
-    watch_minutes: int
-    heartbeat_interval_seconds: int
-    danmaku_count: int
-    danmaku_interval_seconds: int
-    global_danmaku_interval_seconds: int
-    ntfy: NtfyConfig | None
+Uid = Annotated[int, Field(gt=0)]
+
+
+class Settings(BaseModel):
+    model_config = ConfigDict(
+        strict=True, extra="forbid", frozen=True, hide_input_in_errors=True
+    )
+    include_uids: Annotated[tuple[Uid, ...], Field(min_length=1)]
+    watch_uids: tuple[Uid, ...] = ()
+    poll_interval_seconds: Annotated[int, Field(ge=30, le=3600)] = 120
+    request_timeout_seconds: Annotated[int, Field(ge=1, le=120)] = 15
+    api_interval_seconds: Annotated[int, Field(ge=1, le=60)] = 1
+    like_clicks_per_request: Annotated[int, Field(ge=1, le=300)] = 30
+    like_request_count: Annotated[int, Field(ge=1, le=100)] = 10
+    like_interval_seconds: Annotated[int, Field(ge=1, le=3600)] = 60
+    watch_minutes: Annotated[int, Field(ge=0, le=1440)] = 150
+    heartbeat_interval_seconds: Annotated[int, Field(ge=30, le=300)] = 60
+    danmaku_count: Annotated[int, Field(ge=0, le=100)] = 10
+    danmaku_interval_seconds: Annotated[int, Field(ge=1, le=3600)] = 180
+    global_danmaku_interval_seconds: Annotated[int, Field(ge=1, le=300)] = 3
+    ntfy: NtfyConfig | None = None
+
+    @field_validator("include_uids", "watch_uids", mode="before")
+    @classmethod
+    def yaml_sequences(cls, value):
+        # YAML represents sequences as lists; keep the validated config immutable.
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("include_uids", "watch_uids")
+    @classmethod
+    def unique_uids(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("cannot contain duplicate UIDs")
+        return value
+
+    @model_validator(mode="after")
+    def watch_configuration(self):
+        if not set(self.watch_uids).issubset(self.include_uids):
+            raise ValueError("watch_uids must be included in include_uids")
+        if self.watch_uids and self.watch_minutes == 0:
+            raise ValueError(
+                "watch_minutes must be positive when watch_uids is not empty"
+            )
+        return self
 
 
 def load_settings(path: Path) -> Settings:
     try:
-        raw = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader) or {}
+        raw = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
     except yaml.YAMLError as error:
         raise ValueError(f"Invalid YAML configuration: {error}") from error
-    if not isinstance(raw, dict):
-        raise TypeError("Configuration root must be a YAML mapping")
-    _reject_unknown(raw, ROOT_FIELDS, "configuration")
-
-    include_uids = _uid_list(raw.get("include_uids"), "include_uids", required=True)
-    watch_uids = _uid_list(raw.get("watch_uids", []), "watch_uids")
-    unknown_watch_uids = [uid for uid in watch_uids if uid not in include_uids]
-    if unknown_watch_uids:
-        raise ValueError(
-            f"watch_uids must be included in include_uids: {unknown_watch_uids}"
-        )
-
-    settings = Settings(
-        include_uids=include_uids,
-        watch_uids=watch_uids,
-        poll_interval_seconds=_bounded_int(raw, "poll_interval_seconds", 120, 30, 3600),
-        request_timeout_seconds=_bounded_int(
-            raw, "request_timeout_seconds", 15, 1, 120
-        ),
-        api_interval_seconds=_bounded_int(raw, "api_interval_seconds", 1, 1, 60),
-        like_clicks_per_request=_bounded_int(
-            raw, "like_clicks_per_request", 30, 1, 300
-        ),
-        like_request_count=_bounded_int(raw, "like_request_count", 10, 1, 100),
-        like_interval_seconds=_bounded_int(raw, "like_interval_seconds", 60, 1, 3600),
-        watch_minutes=_bounded_int(raw, "watch_minutes", 150, 0, 1440),
-        heartbeat_interval_seconds=_bounded_int(
-            raw, "heartbeat_interval_seconds", 60, 30, 300
-        ),
-        danmaku_count=_bounded_int(raw, "danmaku_count", 10, 0, 100),
-        danmaku_interval_seconds=_bounded_int(
-            raw, "danmaku_interval_seconds", 180, 1, 3600
-        ),
-        global_danmaku_interval_seconds=_bounded_int(
-            raw, "global_danmaku_interval_seconds", 3, 1, 300
-        ),
-        ntfy=_parse_ntfy(raw.get("ntfy")),
-    )
-    if settings.watch_uids and settings.watch_minutes == 0:
-        raise ValueError("watch_minutes must be positive when watch_uids is not empty")
-    return settings
-
-
-def _parse_ntfy(value: Any) -> NtfyConfig | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise TypeError("ntfy must be a YAML mapping")
-    _reject_unknown(value, {"server", "topic", "token"}, "ntfy")
-    server = value.get("server")
-    if not isinstance(server, str):
-        raise TypeError("ntfy.server must be a URL")
-    server = server.strip().rstrip("/")
-    parsed = urlsplit(server)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("ntfy.server must be an HTTP(S) URL")
-    topic = value.get("topic")
-    if isinstance(topic, str):
-        topic = topic.strip()
-    if not isinstance(topic, str) or not NTFY_TOPIC_PATTERN.fullmatch(topic):
-        raise ValueError(
-            "ntfy.topic must contain 1-64 letters, numbers, underscores, or hyphens"
-        )
-    token = value.get("token")
-    if token is not None and not isinstance(token, str):
-        raise ValueError("ntfy.token must be a string")
-    token = token.strip() if token else None
-    if token and not token.isascii():
-        raise ValueError("ntfy.token must contain only ASCII characters")
-    return NtfyConfig(server=server, topic=topic, token=token)
+    return Settings.model_validate(raw)
 
 
 def load_access_key(path: Path) -> str:
@@ -172,37 +135,6 @@ def load_access_key(path: Path) -> str:
     if not access_key:
         raise ValueError("access key cannot be empty")
     return access_key
-
-
-def _uid_list(value: Any, field: str, *, required: bool = False) -> tuple[int, ...]:
-    if not isinstance(value, list) or any(
-        isinstance(uid, bool) or not isinstance(uid, int) or uid <= 0 for uid in value
-    ):
-        raise ValueError(f"{field} must be a list of positive integers")
-    if required and not value:
-        raise ValueError(f"{field} cannot be empty")
-    if len(set(value)) != len(value):
-        raise ValueError(f"{field} cannot contain duplicate UIDs")
-    return tuple(value)
-
-
-def _bounded_int(
-    raw: dict[str, Any], field: str, default: int, minimum: int, maximum: int
-) -> int:
-    value = raw.get(field, default)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not minimum <= value <= maximum
-    ):
-        raise ValueError(f"{field} must be an integer between {minimum} and {maximum}")
-    return value
-
-
-def _reject_unknown(value: dict[str, Any], allowed: set[str], label: str) -> None:
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise ValueError(f"Unknown {label} fields: {', '.join(unknown)}")
 
 
 def main() -> None:

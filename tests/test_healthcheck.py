@@ -4,7 +4,8 @@ from datetime import date
 import pytest
 
 from bilibili_live_helper.healthcheck import check_health
-from bilibili_live_helper.state import AppState, StateStore
+from bilibili_live_helper.progress import AppState
+from bilibili_live_helper.state import StateStore
 
 
 def test_healthcheck_accepts_recent_successful_poll(tmp_path):

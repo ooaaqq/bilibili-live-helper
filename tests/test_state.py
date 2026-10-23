@@ -2,13 +2,15 @@ import json
 import stat
 from datetime import date
 
-from bilibili_live_helper.state import (
+import pytest
+
+from bilibili_live_helper.progress import (
     AppState,
     OutboxMessage,
     RoomProgress,
-    StateStore,
     WatchProgress,
 )
+from bilibili_live_helper.state import StateStore
 
 
 def test_state_round_trip_preserves_phase_progress_and_outbox(tmp_path):
@@ -18,9 +20,9 @@ def test_state_round_trip_preserves_phase_progress_and_outbox(tmp_path):
         day=date(2026, 7, 11),
         rooms={
             1: RoomProgress(
-                1,
-                101,
-                "Alpha",
+                anchor_id=1,
+                room_id=101,
+                anchor_name="Alpha",
                 likes_sent=4,
                 like_attempts=4,
                 danmaku_sent=2,
@@ -30,9 +32,9 @@ def test_state_round_trip_preserves_phase_progress_and_outbox(tmp_path):
         },
         watches={
             1: WatchProgress(
-                1,
-                101,
-                "Alpha",
+                anchor_id=1,
+                room_id=101,
+                anchor_name="Alpha",
                 heartbeat_count=7,
                 watched_seconds=420,
                 watch_seconds_attempted=420,
@@ -42,7 +44,11 @@ def test_state_round_trip_preserves_phase_progress_and_outbox(tmp_path):
         },
         outbox={
             "bilibili-test": OutboxMessage(
-                "bilibili-test", "Title", "Body", "eyes", attempts=2
+                sequence_id="bilibili-test",
+                title="Title",
+                message="Body",
+                tags="eyes",
+                attempts=2,
             )
         },
         last_successful_poll_at=12,
@@ -63,57 +69,50 @@ def test_state_round_trip_preserves_phase_progress_and_outbox(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_invalid_state_is_quarantined_instead_of_blocking_startup(tmp_path):
+def test_invalid_state_stops_without_modifying_the_file(tmp_path):
     path = tmp_path / "state.json"
-    path.write_text(json.dumps({"version": 0}), encoding="utf-8")
-    store = StateStore(path)
-
-    state = store.load(date(2026, 7, 11))
-
-    assert state.day == date(2026, 7, 11)
-    assert not path.exists()
-    assert len(list(tmp_path.glob("state.json.corrupt-*"))) == 1
+    original = '{"version": 0}'
+    path.write_text(original)
+    with pytest.raises(ValueError):
+        StateStore(path).load(date(2026, 7, 11))
+    assert path.read_text() == original
 
 
-def test_previous_state_schema_is_quarantined(tmp_path):
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda state: state["rooms"]["1"].pop("like_attempts"),
+        lambda state: state["rooms"]["1"].update(likes_sent=True),
+        lambda state: state["rooms"].update({"01": state["rooms"].pop("1")}),
+        lambda state: state.update(last_successful_poll_at=float("inf")),
+        lambda state: state.update(unexpected=1),
+    ],
+)
+def test_rejects_invalid_persisted_progress(tmp_path, change):
     path = tmp_path / "state.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "day": "2026-07-11",
-                "rooms": {
-                    "1": {
-                        "anchor_id": 1,
-                        "room_id": 101,
-                        "anchor_name": "Alpha",
-                        "likes_sent": 4,
-                        "danmaku_sent": 2,
-                        "notification_queued": False,
-                        "last_error": None,
-                        "updated_at": 10,
-                    }
-                },
-                "watches": {
-                    "1": {
-                        "anchor_id": 1,
-                        "room_id": 101,
-                        "anchor_name": "Alpha",
-                        "heartbeat_count": 7,
-                        "status": "pending",
-                        "last_error": None,
-                        "updated_at": 11,
-                    }
-                },
-                "outbox": {},
-                "last_successful_poll_at": 12,
-            }
-        ),
-        encoding="utf-8",
+    StateStore(path).save(
+        AppState(
+            day=date(2026, 7, 11),
+            rooms={1: RoomProgress(anchor_id=1, room_id=101, anchor_name="Alpha")},
+        )
     )
+    payload = json.loads(path.read_text())
+    change(payload)
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError):
+        StateStore(path).load(date(2026, 7, 11))
 
-    state = StateStore(path).load(date(2026, 7, 11))
 
-    assert state.day == date(2026, 7, 11)
-    assert not path.exists()
-    assert len(list(tmp_path.glob("state.json.corrupt-*"))) == 1
+def test_save_validates_mutated_progress_before_replacing_file(tmp_path):
+    path = tmp_path / "state.json"
+    state = AppState(
+        day=date(2026, 7, 11),
+        rooms={1: RoomProgress(anchor_id=1, room_id=101, anchor_name="Alpha")},
+    )
+    store = StateStore(path)
+    store.save(state)
+    original = path.read_bytes()
+    state.rooms[1].likes_sent = 3
+    with pytest.raises(ValueError):
+        store.save(state)
+    assert path.read_bytes() == original

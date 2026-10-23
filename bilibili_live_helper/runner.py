@@ -11,7 +11,8 @@ from .bilibili import BilibiliError, HeartbeatSession
 from .config import Settings
 from .models import LiveRoom
 from .notify import NotificationPublisher, PersistentOutbox
-from .state import AppState, OutboxMessage, RoomProgress, StateStore, WatchProgress
+from .progress import AppState, OutboxMessage, RoomProgress, WatchProgress
+from .state import StateStore
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 Sleep = Callable[[float], Awaitable[None]]

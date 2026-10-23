@@ -54,7 +54,7 @@ def test_checked_in_config_is_valid():
 
 def test_rejects_removed_multi_account_format(tmp_path: Path):
     config = _write_config(tmp_path, "accounts: []\n")
-    with pytest.raises(ValueError, match="Unknown configuration fields: accounts"):
+    with pytest.raises(ValueError, match="accounts"):
         load_settings(config)
 
 
@@ -83,9 +83,9 @@ watch_uids: [2]
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("include_uids", "[]", "include_uids cannot be empty"),
+        ("include_uids", "[]", "at least 1 item"),
         ("include_uids", "[1, 1]", "cannot contain duplicate"),
-        ("like_clicks_per_request", "301", "between 1 and 300"),
+        ("like_clicks_per_request", "301", "less than or equal to 300"),
         ("watch_minutes", "0", "watch_minutes must be positive"),
     ],
 )
@@ -133,3 +133,33 @@ def _write_config(tmp_path: Path, value: str) -> Path:
     path = tmp_path / "users.yaml"
     path.write_text(value, encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "include_uids: [true]",
+        'include_uids: ["1"]',
+        'include_uids: [1]\npoll_interval_seconds: "60"',
+        "include_uids: [1]\npoll_interval_seconds: true",
+        "include_uids: [1]\nunknown: 1",
+        "include_uids: [1]\nntfy:\n  server: https://example.com\n  topic: ok\n  unknown: 1",
+    ],
+)
+def test_strict_types_and_unknown_fields(tmp_path, text):
+    with pytest.raises(ValueError):
+        load_settings(_write_config(tmp_path, text))
+
+
+def test_configuration_is_immutable_and_errors_hide_tokens(tmp_path):
+    settings = load_settings(_write_config(tmp_path, "include_uids: [1]"))
+    with pytest.raises(ValueError):
+        settings.watch_minutes = 1
+    with pytest.raises(ValueError) as captured:
+        load_settings(
+            _write_config(
+                tmp_path,
+                'include_uids: [1]\nntfy:\n  server: https://example.com\n  topic: ok\n  token: "PRIVATE_TOKEN_汉字"',
+            )
+        )
+    assert "PRIVATE_TOKEN" not in str(captured.value)
