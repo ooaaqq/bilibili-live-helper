@@ -134,6 +134,52 @@ async def test_heartbeat_uses_room_area_and_stable_session_identity():
     assert {payload["watch_time"] for payload in payloads} == {"60"}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [{"code": -101, "message": "not logged in"}, {"unexpected": True}, {"code": True}],
+)
+async def test_get_does_not_retry_api_rejection_or_invalid_envelope(payload):
+    client = BilibiliClient("key", 10, 1, sleep=_no_sleep)
+    client.session = FakeSession([FakeResponse(payload)])
+    with pytest.raises(BilibiliError):
+        await client._get("https://example.invalid/read", signed=False)
+    assert client.session.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,expected_calls", [(429, 1), (403, 1), (503, 2)])
+async def test_get_retries_only_transient_http_status(status, expected_calls):
+    client = BilibiliClient("key", 10, 1, sleep=_no_sleep)
+    response = type("Response", (), {"status_code": status})()
+    client.session = FakeSession(
+        [
+            RequestsError("secret URL", response=response),
+            FakeResponse({"code": 0, "data": {"ok": True}}),
+        ]
+    )
+    if expected_calls == 1:
+        with pytest.raises(BilibiliError):
+            await client._get("https://example.invalid/read", signed=False)
+    else:
+        assert await client._get("https://example.invalid/read", signed=False) == {
+            "ok": True
+        }
+    assert client.session.calls == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_get_does_not_retry_invalid_json():
+    response = FakeResponse(None)
+    response.json = lambda: (_ for _ in ()).throw(ValueError("secret response"))
+    client = BilibiliClient("key", 10, 1, sleep=_no_sleep)
+    client.session = FakeSession([response])
+    with pytest.raises(BilibiliError) as captured:
+        await client._get("https://example.invalid/read", signed=False)
+    assert client.session.calls == 1
+    assert "secret" not in str(captured.value)
+
+
 class FakeResponse:
     def __init__(self, payload):
         self.payload = payload

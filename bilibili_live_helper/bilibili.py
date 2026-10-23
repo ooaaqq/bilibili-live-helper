@@ -13,6 +13,7 @@ from typing import Any, Self
 from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
+from curl_cffi.const import CurlECode
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.errors import RequestsError
 
@@ -235,7 +236,7 @@ class BilibiliClient:
             if params is not None and not isinstance(params, Mapping):
                 raise TypeError("Signed parameters must be a mapping")
             params = self._signed(params or {})
-        return await self._request("GET", url, attempts=3, params=params or {})
+        return await self._request("GET", url, params=params or {})
 
     async def _post(
         self,
@@ -247,18 +248,15 @@ class BilibiliClient:
         return await self._request(
             "POST",
             url,
-            attempts=1,
             data=self._signed(data),
             headers=headers or dict(APP_HEADERS),
         )
 
-    async def _request(
-        self, method: str, url: str, *, attempts: int, **kwargs: Any
-    ) -> Any:
+    async def _request(self, method: str, url: str, **kwargs: Any) -> Any:
         if not self.session:
             raise RuntimeError("Bilibili client is not started")
         endpoint = urlsplit(url).path
-        last_error: BilibiliError | None = None
+        attempts = 3 if method == "GET" else 1
         for attempt in range(1, attempts + 1):
             try:
                 async with self._request_lock:
@@ -269,48 +267,59 @@ class BilibiliClient:
                             method, url, timeout=self.timeout_seconds, **kwargs
                         )
                         response.raise_for_status()
-                        body = response.json()
                     finally:
                         self._next_request_at = (
                             self.monotonic() + self.request_interval_seconds
                         )
-                if not isinstance(body, dict) or not isinstance(body.get("code"), int):
-                    raise BilibiliError(
-                        f"Invalid Bilibili response from {endpoint}",
-                        ambiguous=method == "POST",
-                    )
-                if body["code"] != 0:
-                    message = body.get("message")
-                    detail = (
-                        message
-                        if isinstance(message, str) and message
-                        else "Bilibili API request failed"
-                    )
-                    raise BilibiliError(f"{endpoint}: {detail}", code=body["code"])
-                return body.get("data", {})
             except RequestsError as error:
-                curl_code = getattr(error, "code", None)
-                suffix = f" (curl code {curl_code})" if curl_code is not None else ""
-                last_error = BilibiliError(
-                    f"Transport error from {endpoint}{suffix}",
-                    ambiguous=method == "POST",
+                status = (
+                    error.response.status_code if error.response is not None else None
                 )
-            except (json.JSONDecodeError, ValueError, TypeError) as error:
-                last_error = BilibiliError(
-                    f"Invalid response from {endpoint}: {type(error).__name__}",
-                    ambiguous=method == "POST",
-                )
-            except BilibiliError as error:
-                last_error = error
-            if attempt < attempts:
+                transient = status in {500, 502, 503, 504} or error.code in {
+                    CurlECode.COULDNT_RESOLVE_HOST,
+                    CurlECode.COULDNT_CONNECT,
+                    CurlECode.PARTIAL_FILE,
+                    CurlECode.OPERATION_TIMEDOUT,
+                    CurlECode.GOT_NOTHING,
+                    CurlECode.SEND_ERROR,
+                    CurlECode.RECV_ERROR,
+                    CurlECode.HTTP2,
+                    CurlECode.HTTP2_STREAM,
+                }
+                if not transient or attempt == attempts:
+                    raise BilibiliError(
+                        f"Transport error from {endpoint} (curl code {error.code}, HTTP {status})",
+                        ambiguous=method == "POST",
+                    ) from None
                 self.logger.warning(
-                    "Bilibili GET failed at %s; retrying (%s/%s)",
+                    "Bilibili GET transport failed at %s; retrying (%s/%s)",
                     endpoint,
                     attempt,
                     attempts,
                 )
                 await self.sleep(2 ** (attempt - 1))
-        raise last_error or BilibiliError(f"Bilibili request failed at {endpoint}")
+                continue
+            try:
+                body = response.json()
+            except (ValueError, TypeError) as error:
+                raise BilibiliError(
+                    f"Invalid response from {endpoint}: {type(error).__name__}",
+                    ambiguous=method == "POST",
+                ) from None
+            if not isinstance(body, dict) or type(body.get("code")) is not int:
+                raise BilibiliError(
+                    f"Invalid Bilibili response from {endpoint}",
+                    ambiguous=method == "POST",
+                )
+            if body["code"] != 0:
+                message = body.get("message")
+                detail = (
+                    message
+                    if isinstance(message, str) and message
+                    else "Bilibili API request failed"
+                )
+                raise BilibiliError(f"{endpoint}: {detail}", code=body["code"])
+            return body.get("data")
 
     def _signed(self, data: Mapping[str, Any]) -> dict[str, Any]:
         payload = {
