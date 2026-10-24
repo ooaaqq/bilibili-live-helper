@@ -41,6 +41,7 @@ HTTP 429、其他拒绝及无效响应立即失败。明确的 API 拒绝可在�
 状态在副作用请求前和确认响应后原子保存。重启继续当天未完成任务，上海时间午夜停止旧任务并进入新一天。
 配置和状态使用 Pydantic 严格模型校验，拒绝未知字段和类型转换。无效或不完整的状态直接阻止启动，保留原文件；仅状态文件不存在时创建新进度。ntfy
 消息先进入持久队列，失败后退避重试。
+连续直播状态轮询失败三轮后，故障提醒进入同一持久队列，恢复时通知；跨重启和午夜保留失败状态。
 通知包含开播标题、点赞及弹幕完成进度和每日观看汇总，区分已确认与不确定结果。
 
 直播发现使用公开批量接口；点赞和弹幕保留 app access key 签名，观看使用认证的
@@ -53,7 +54,6 @@ fleet 的 flake 固定本仓库 revision，构建原生 NixOS 服务。生产配
 `StateDirectory`，通过上述三个环境变量接收配置、凭据和状态路径。
 更新源码后，需在 fleet 更新固定 revision 才会部署。
 
-包提供 `bilibili-live-helper`、`bilibili-live-helper-check-config` 和
-`bilibili-live-helper-healthcheck`。 `scripts/check.sh` 执行原生 flake
+包提供 `bilibili-live-helper` 和 `bilibili-live-helper-check-config`。 `scripts/check.sh` 执行原生 flake
 检查，测试环境由同一 Python 锁构建；默认分支与 PR 执行同一检查，文档跳过。
 Python 锁维护应用和测试依赖，Nix 提供工具；生产包由 fleet 构建。

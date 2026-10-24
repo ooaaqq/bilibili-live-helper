@@ -804,3 +804,47 @@ def _runner(
 
 async def _no_sleep(_seconds):
     return None
+
+
+@pytest.mark.asyncio
+async def test_poll_fault_and_recovery_survive_restart_midnight_and_delivery_failure(
+    tmp_path,
+):
+    class Client(FakeClient):
+        broken = True
+
+        async def discover_live_rooms(self, _anchor_ids):
+            if self.broken:
+                raise BilibiliError("network")
+            return []
+
+    client = Client([])
+    store = StateStore(tmp_path / "state.json")
+    notifier = FakeNotifier(failures=1)
+    settings = Settings(include_uids=(1,))
+    runner = LiveTaskRunner(client, settings, store, notifier=notifier, now=lambda: NOW)
+    for _ in range(2):
+        with pytest.raises(BilibiliError):
+            await runner.run_once()
+    runner = LiveTaskRunner(client, settings, store, notifier=notifier, now=lambda: NOW)
+    with pytest.raises(BilibiliError):
+        await runner.run_once()
+    assert runner.state.poll_failures == 3
+    assert len(runner.state.outbox) == 1
+    await runner.outbox.flush_once()
+    assert len(runner.state.outbox) == 1
+    await runner._rollover(date(2026, 7, 12))
+    assert runner.state.poll_failures == 3
+    runner.now = lambda: NOW.replace(day=12)
+    client.broken = False
+    await runner.run_once()
+    assert runner.state.poll_failures == 0
+    assert sum(key.startswith("bilibili-poll-") for key in runner.state.outbox) == 2
+    for message in runner.state.outbox.values():
+        message.next_attempt_at = 0
+    await runner.outbox.flush_once()
+    assert not runner.state.outbox
+    assert (
+        sum(message[3].startswith("bilibili-poll-") for message in notifier.messages)
+        == 2
+    )

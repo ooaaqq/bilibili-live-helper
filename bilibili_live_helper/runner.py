@@ -120,7 +120,31 @@ class LiveTaskRunner:
             raise
         except BilibiliError:
             await self._suspend_live_tasks()
+            self._poll_health(failed=True)
             raise
+        self._poll_health(failed=False)
+
+    def _poll_health(self, *, failed: bool) -> None:
+        previous = self.state.poll_failures
+        if failed:
+            self.state.poll_failed_at = self.state.poll_failed_at or self.wall_time()
+            self.state.poll_failures = min(previous + 1, 3)
+        else:
+            self.state.poll_failures = 0
+        if (failed and previous == 2) or (not failed and previous == 3):
+            self._queue_notification(
+                sequence_id=f"bilibili-poll-{int(self.state.poll_failed_at or 0)}-{'failed' if failed else 'recovered'}",
+                title="Bilibili Live Helper polling failed"
+                if failed
+                else "Bilibili Live Helper recovered",
+                message="Live-state polling failed for three consecutive rounds."
+                if failed
+                else "Live-state polling recovered.",
+                tags="warning" if failed else "white_check_mark",
+            )
+        if not failed:
+            self.state.poll_failed_at = None
+        self.state_store.save(self.state)
 
     async def _refresh_once(self) -> None:
         refresh_day = self.now().date()
@@ -477,7 +501,13 @@ class LiveTaskRunner:
                     )
                 )
             outbox = self.state.outbox
-            self.state = AppState(day=new_day, outbox=outbox)
+            self.state = AppState(
+                day=new_day,
+                outbox=outbox,
+                last_successful_poll_at=self.state.last_successful_poll_at,
+                poll_failures=self.state.poll_failures,
+                poll_failed_at=self.state.poll_failed_at,
+            )
             self.live_rooms.clear()
             self.state_store.save(self.state)
             if self.outbox:

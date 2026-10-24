@@ -13,7 +13,6 @@ dependencies = [
 [project.scripts]
 bilibili-live-helper = "bilibili_live_helper.__main__:main"
 bilibili-live-helper-check-config = "bilibili_live_helper.config:main"
-bilibili-live-helper-healthcheck = "bilibili_live_helper.healthcheck:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0"]
