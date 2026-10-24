@@ -90,12 +90,13 @@ class OutboxMessage(StateModel):
 
 
 class AppState(StateModel):
-    version: Literal[3] = 3
+    version: Literal[4] = 4
     day: date
     rooms: dict[Uid, RoomProgress] = Field(default_factory=dict)
     watches: dict[Uid, WatchProgress] = Field(default_factory=dict)
     outbox: dict[str, OutboxMessage] = Field(default_factory=dict)
     last_successful_poll_at: Timestamp | None = None
+    poll_alerted: bool = False
     poll_failures: Count = 0
     poll_failed_at: Timestamp | None = None
 

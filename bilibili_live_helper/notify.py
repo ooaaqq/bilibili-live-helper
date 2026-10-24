@@ -144,6 +144,9 @@ class PersistentOutbox:
                 )
                 continue
             state = self.state()
+            if sequence_id == "bilibili-poll-health":
+                state.poll_alerted = pending.tags == "warning"
+                self.state_store.save(state)
             if state.outbox.get(sequence_id) is pending:
                 state.outbox.pop(sequence_id, None)
                 self.state_store.save(state)

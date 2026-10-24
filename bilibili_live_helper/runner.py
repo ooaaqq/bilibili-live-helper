@@ -25,6 +25,7 @@ class _StopRequested(Exception):
 
 
 class LiveClient(Protocol):
+    async def login(self) -> None: ...
     async def discover_live_rooms(
         self, anchor_ids: tuple[int, ...]
     ) -> list[LiveRoom]: ...
@@ -115,32 +116,45 @@ class LiveTaskRunner:
 
     async def run_once(self) -> None:
         try:
+            await self.client.login()
             await self._refresh_once()
         except asyncio.CancelledError:
             raise
-        except BilibiliError:
+        except BilibiliError as error:
             await self._suspend_live_tasks()
-            self._poll_health(failed=True)
+            self._poll_health(failed=True, authentication=error.code in {-101, -102})
             raise
         self._poll_health(failed=False)
 
-    def _poll_health(self, *, failed: bool) -> None:
+    def _poll_health(self, *, failed: bool, authentication: bool = False) -> None:
         previous = self.state.poll_failures
         if failed:
             self.state.poll_failed_at = self.state.poll_failed_at or self.wall_time()
-            self.state.poll_failures = min(previous + 1, 3)
+            self.state.poll_failures = 3 if authentication else min(previous + 1, 3)
         else:
             self.state.poll_failures = 0
-        if (failed and previous == 2) or (not failed and previous == 3):
+        # Health is a replaceable current state, never a historical event backlog.
+        key = "bilibili-poll-health"
+        pending = self.state.outbox.get(key)
+        desired = "warning" if failed else "white_check_mark"
+        if pending and (pending.tags != desired or self.state.poll_alerted == failed):
+            self.state.outbox.pop(key, None)
+        if (
+            failed and self.state.poll_failures == 3 and not self.state.poll_alerted
+        ) or (not failed and self.state.poll_alerted):
             self._queue_notification(
-                sequence_id=f"bilibili-poll-{int(self.state.poll_failed_at or 0)}-{'failed' if failed else 'recovered'}",
+                sequence_id=key,
                 title="Bilibili Live Helper polling failed"
                 if failed
                 else "Bilibili Live Helper recovered",
-                message="Live-state polling failed for three consecutive rounds."
+                message=(
+                    "账号凭据已失效，请更新 access key。"
+                    if authentication
+                    else "账号认证或直播轮询连续失败，请检查 access key、网络及接口。"
+                )
                 if failed
-                else "Live-state polling recovered.",
-                tags="warning" if failed else "white_check_mark",
+                else "账号认证与直播轮询已恢复。",
+                tags=desired,
             )
         if not failed:
             self.state.poll_failed_at = None
@@ -507,6 +521,7 @@ class LiveTaskRunner:
                 last_successful_poll_at=self.state.last_successful_poll_at,
                 poll_failures=self.state.poll_failures,
                 poll_failed_at=self.state.poll_failed_at,
+                poll_alerted=self.state.poll_alerted,
             )
             self.live_rooms.clear()
             self.state_store.save(self.state)

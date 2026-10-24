@@ -71,12 +71,6 @@ class BilibiliClient:
 
     async def __aenter__(self) -> Self:
         self.session = AsyncSession(max_clients=1, impersonate="chrome131")
-        try:
-            await self.login()
-        except Exception:
-            await self.session.close()
-            self.session = None
-            raise
         return self
 
     async def __aexit__(self, *_: object) -> None:

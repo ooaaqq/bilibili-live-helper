@@ -21,6 +21,9 @@ NOW = datetime(2026, 7, 11, 12, tzinfo=SHANGHAI)
 
 
 class FakeClient:
+    async def login(self):
+        pass
+
     def __init__(self, rooms=None):
         self.rooms = (
             [LiveRoom(1, 101, "Alpha", "Live", 9, 6)] if rooms is None else rooms
@@ -839,12 +842,43 @@ async def test_poll_fault_and_recovery_survive_restart_midnight_and_delivery_fai
     client.broken = False
     await runner.run_once()
     assert runner.state.poll_failures == 0
-    assert sum(key.startswith("bilibili-poll-") for key in runner.state.outbox) == 2
-    for message in runner.state.outbox.values():
-        message.next_attempt_at = 0
-    await runner.outbox.flush_once()
-    assert not runner.state.outbox
     assert (
-        sum(message[3].startswith("bilibili-poll-") for message in notifier.messages)
-        == 2
+        "bilibili-poll-health" not in runner.state.outbox
+    )  # The undelivered fault is obsolete.
+    runner.state.outbox.clear()
+    assert not notifier.messages
+    client.broken = True
+    for _ in range(3):
+        with pytest.raises(BilibiliError):
+            await runner.run_once()
+    await runner.outbox.flush_once()
+    assert runner.state.poll_alerted
+    client.broken = False
+    await runner.run_once()
+    assert len(runner.state.outbox) == 1
+    await runner.outbox.flush_once()
+    assert not runner.state.poll_alerted
+    assert not runner.state.outbox
+    assert len(notifier.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_initial_authentication_failure_is_monitored(tmp_path):
+    class Unauthenticated(FakeClient):
+        async def login(self):
+            raise BilibiliError("expired access key", code=-101)
+
+    notifier = FakeNotifier()
+    runner = LiveTaskRunner(
+        Unauthenticated([]),
+        Settings(include_uids=(1,)),
+        StateStore(tmp_path / "state.json"),
+        notifier=notifier,
+        now=lambda: NOW,
     )
+    for _ in range(3):
+        with pytest.raises(BilibiliError):
+            await runner.run_once()
+    await runner.outbox.flush_once()
+    assert len(notifier.messages) == 1
+    assert runner.state.poll_alerted
