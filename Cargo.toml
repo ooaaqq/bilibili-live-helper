@@ -12,7 +12,6 @@ clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
 md-5 = "0.11"
 rand = "0.10"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 rusqlite = "0.41"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
