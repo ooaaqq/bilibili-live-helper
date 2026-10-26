@@ -45,7 +45,13 @@ let
     buildInputs = [ sqlite ];
     SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
   };
-  cargoArtifacts = craneLib.buildDepsOnly common;
+  cargoArtifacts = craneLib.buildDepsOnly (
+    common
+    // {
+      doCheck = false;
+      buildPhaseCargoCommand = "cargoWithProfile build --locked";
+    }
+  );
   checkCommon = common // {
     CARGO_PROFILE = "dev";
     CARGO_PROFILE_DEV_DEBUG = "0";
@@ -71,10 +77,6 @@ let
         wrapProgram "$out/bin/bilibili-live-helper" --set SSL_CERT_FILE ${cacert}/etc/ssl/certs/ca-bundle.crt
       '';
       passthru.checks = linkFarm "bilibili-live-helper-checks" [
-        {
-          name = "package";
-          path = application;
-        }
         {
           name = "tests";
           path = tests;
