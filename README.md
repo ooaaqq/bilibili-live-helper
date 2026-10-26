@@ -1,60 +1,52 @@
 # Bilibili Live Helper
 
-单账户直播任务应用，不监听网络端口。使用 infra 工作区的开发环境。
+单账户直播任务应用，原生 Rust 程序，不监听网络端口。开发工具由 infra 根 `nix develop` 提供。
 
-## 配置与运行
+## 配置与命令
 
-从 `config.example.yaml` 创建本机 `config.yaml`：`include_uids`
-是主播清单，`watch_uids` 是按优先级排列的观看清单，必须是前者的子集。
-参数含义和当前数值见配置文件。重复字段、重复 UID、未知参数和空主播清单会被拒绝。
-access key 从单独文件读取，不写入配置。
+复制 `config.example.yaml` 为私有 `config.yaml`。`include_uids` 是主播清单，
+`watch_uids` 是其中按优先级排列的观看清单；所有间隔和任务数量必须明确填写。
+未知或重复字段、重复 UID、无效类型和超范围参数会阻止启动。access key 保存在单独文件。
 
 ```sh
-cp config.example.yaml config.yaml
-uv sync --locked
-uv run python -m bilibili_live_helper
-infra check bilibili-live-helper
+cargo run -- check
+cargo run -- run
+./scripts/check.sh
 ```
 
-本地状态默认为 `data/state.json`。可通过环境变量指定路径：
+程序提供 `run`、`check` 和 `import-state <JSON 文件>` 子命令。
+`import-state` 仅接受版本 4 的任务导出，并拒绝覆盖已有进度；导入在单个事务中完成。
 
-| 变量                                   | 用途            |
-| -------------------------------------- | --------------- |
-| `BILIBILI_LIVE_HELPER_CONFIG`          | 配置文件        |
-| `BILIBILI_LIVE_HELPER_ACCESS_KEY_FILE` | access key 文件 |
-| `BILIBILI_LIVE_HELPER_STATE`           | 状态文件        |
+| 参数 | 环境变量 | 默认值 |
+|---|---|---|
+| `--config` | `BILIBILI_LIVE_HELPER_CONFIG` | `config.yaml` |
+| `--access-key-file` | `BILIBILI_LIVE_HELPER_ACCESS_KEY_FILE` | `access_key` |
+| `--database` | `BILIBILI_LIVE_HELPER_DATABASE` | `data/state.sqlite` |
 
-ntfy 使用 JSON 发布接口，在 `config.yaml` 的 `ntfy` 中分别填写 server 和
-topic，可设置 token。
+ntfy 配置包含 JSON 发布接口的 `server`、`topic` 和可选 `token`。不打印凭据或原始接口响应。
 
-## 任务与状态
+## 调度与持久状态
 
-每次轮询通过 `Room/get_status_info_by_uids`
-批量获取直播状态，随后独立执行点赞、弹幕和观看任务。 观看一次只运行一个任务，按
-`watch_uids` 顺序分配空闲位置，下播后停止。
-观看目标按秒计时；心跳间隔只影响请求次数。不同直播间的点赞序列独立推进。
+一个调度循环拥有 SQLite 状态和账户请求队列，批量获取直播状态，按到期时间执行点赞、弹幕和观看。
+不同直播间各自维护互动进度；弹幕同时遵守全局最小间隔。
+观看仅占一个位置，按 `watch_uids` 顺序分配，完成或下播后交给下一个目标。
+心跳使用稳定会话身份、接口提供的实际分区和已等待的时间，不把网络延迟算成观看时长。
+上海时间午夜切换日期并生成观看汇总；轮询失败时暂停直播任务。
 
-账户请求串行执行，间隔由配置控制。GET 仅对连接、超时等暂时性传输故障和 HTTP 500/502/503/504 最多尝试三次；
-HTTP 429、其他拒绝及无效响应立即失败。明确的 API 拒绝可在后续轮询重试。
-可能已送达的 POST 超时会记为不确定结果，不重复发送。响应 `code: 0` 视为成功。
+副作用请求前先持久记录预约，确认成功后增加已确认进度。明确 API 拒绝释放预约；
+连接异常、超时和无法解析的响应保留为结果不确定，不重复该次请求。
+崩溃或重启后，未确认预约仍然占用任务额度，防止重复点赞、发送弹幕或上报观看。
+GET 只对明确的暂时性传输故障和 HTTP 500/502/503/504 最多尝试三次；429 和 API 拒绝不即时重试。
 
-状态在副作用请求前和确认响应后原子保存。重启继续当天未完成任务，上海时间午夜停止旧任务并进入新一天。
-配置和状态使用 Pydantic 严格模型校验，拒绝未知字段和类型转换。无效或不完整的状态直接阻止启动，保留原文件；仅状态文件不存在时创建新进度。ntfy
-消息先进入持久队列，失败后退避重试。
-登录检查也在轮询故障边界内：明确凭据失效立即提醒，其他连续失败三轮后提醒；跨重启和午夜保留失败状态。
-健康提醒只保留当前状态；未送达的故障在恢复后丢弃，已确认送达故障才生成恢复，避免补发过时告警。
-通知包含开播标题、点赞及弹幕完成进度和每日观看汇总，区分已确认与不确定结果。
+wreq 与 wreq-util 提供 Chrome131 TLS/HTTP2 配置和长连接池，应用不实现浏览器指纹协议。
+点赞、弹幕和 mobileHeartBeat 保留 Android 应用协议签名。
 
-直播发现使用公开批量接口；点赞和弹幕保留 app access key 签名，观看使用认证的
-`mobileHeartBeat`。 公开弹幕接口参考 `bilibili-api-python`，它不是运行依赖。
+通知与对应状态一起提交到 SQLite。只确认 HTTP 2xx，失败按 30 秒到 15 分钟退避。
+认证失败立即提醒，其他轮询故障连续三轮后提醒。健康通知只保留当前状态，
+仅已确认送达的故障才生成恢复通知。ntfy 发布不能保证严格只投递一次。
 
-## 生产与检查
+## 构建与生产
 
-fleet 的 flake 固定本仓库 revision，构建原生 NixOS 服务。生产配置位于 fleet
-的主机目录，access key 由 SOPS 管理。 服务使用动态用户和持久
-`StateDirectory`，通过上述三个环境变量接收配置、凭据和状态路径。
-更新源码后，需在 fleet 更新固定 revision 才会部署。
-
-包提供 `bilibili-live-helper` 和 `bilibili-live-helper-check-config`。 `scripts/check.sh` 执行原生 flake
-检查，测试环境由同一 Python 锁构建；默认分支与 PR 执行同一检查，文档跳过。
-Python 锁维护应用和测试依赖，Nix 提供工具；生产包由 fleet 构建。
+Cargo.lock 固定依赖。`scripts/check.sh` 执行 Nix 应用构建、行为测试与严格 Clippy；
+源码禁止 unsafe、unwrap、expect、panic 和未完成实现。生产包由 fleet 固定 revision 构建。
+Nix 提供二进制与必需启动配置；数据库、凭据和通知队列由应用管理。

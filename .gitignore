@@ -1,24 +1,13 @@
-__pycache__
-# *.go
-test.py
-go.mod
-go.sum
-*.exe
-login_info.txt
-users.yaml
-access_key
-*.tmp
-.venv
-venv/
-.direnv/
-.idea/
-*.swp
-*.lnk
-*.bat
-*.json
-
-# Keep the small, shareable workspace configuration under version control.
-!.vscode/
-!.vscode/settings.json
-
+/target/
+/.direnv/
+/.venv/
 /config.yaml
+/access_key
+/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.lock
+!Cargo.lock
+
+__pycache__/

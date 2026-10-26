@@ -1,87 +1,44 @@
 {
-  description = "Bilibili Live Helper native Nix package";
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    pyproject-nix = {
-      url = "github:pyproject-nix/pyproject.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    uv2nix = {
-      url = "github:pyproject-nix/uv2nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.pyproject-nix.follows = "pyproject-nix";
-    };
-    pyproject-build-systems = {
-      url = "github:pyproject-nix/build-system-pkgs";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.pyproject-nix.follows = "pyproject-nix";
-      inputs.uv2nix.follows = "uv2nix";
-    };
-  };
+  description = "Bilibili Live Helper native Rust application";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   outputs =
-    {
-      nixpkgs,
-      pyproject-nix,
-      uv2nix,
-      pyproject-build-systems,
-      ...
-    }:
+    { nixpkgs, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      inherit (nixpkgs) lib;
-      workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
-      pythonSet =
-        (pkgs.callPackage pyproject-nix.build.packages {
-          python = pkgs.python314;
-        }).overrideScope
-          (
-            lib.composeManyExtensions [
-              pyproject-build-systems.overlays.wheel
-              (workspace.mkPyprojectOverlay { sourcePreference = "wheel"; })
-            ]
-          );
-      source = lib.fileset.toSource {
-        root = ./.;
-        fileset = lib.fileset.unions [
-          ./bilibili_live_helper
-          ./tests
-          ./pyproject.toml
-          ./config.example.yaml
+      package = pkgs.rustPlatform.buildRustPackage {
+        pname = "bilibili-live-helper";
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+        src = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./src
+            ./tests/rust.rs
+            ./config.example.yaml
+          ];
+        };
+        cargoHash = "sha256-JVpc1bDfLoFviVwyN8u1XfIVKvy2rDk9XCg24C6eG7g=";
+        nativeBuildInputs = [
+          pkgs.git
+          pkgs.cmake
+          pkgs.perl
+          pkgs.rustPlatform.bindgenHook
+          pkgs.pkg-config
+          pkgs.makeWrapper
         ];
+        buildInputs = [ pkgs.sqlite ];
+        nativeCheckInputs = [ pkgs.clippy ];
+        preCheck = "export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        postCheck = "cargo clippy --release --offline --locked --all-targets -- -D warnings";
+        postInstall = ''wrapProgram "$out/bin/bilibili-live-helper" --set SSL_CERT_FILE ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt'';
+        meta.mainProgram = "bilibili-live-helper";
       };
     in
     {
-      packages.${system}.default = pythonSet.mkVirtualEnv "bilibili-live-helper" workspace.deps.default;
-      checks.${system} = {
-        pytest =
-          pkgs.runCommand "bilibili-live-helper-tests"
-            {
-              src = source;
-              nativeBuildInputs = [ (pythonSet.mkVirtualEnv "bilibili-live-helper-tests" workspace.deps.all) ];
-            }
-            ''
-              cp -r "$src" source
-              chmod -R u+w source
-              cd source
-              pytest -p no:cacheprovider
-              touch "$out"
-            '';
-        lint =
-          pkgs.runCommand "bilibili-live-helper-lint"
-            {
-              src = source;
-              nativeBuildInputs = [ pkgs.ruff ];
-            }
-            ''
-              cp -r "$src" source
-              chmod -R u+w source
-              cd source
-              ruff check . --no-cache
-              ruff format --check . --no-cache
-              touch "$out"
-            '';
-      };
+      packages.${system}.default = package;
+      checks.${system}.application = package;
       formatter.${system} = pkgs.nixfmt-tree;
     };
 }
