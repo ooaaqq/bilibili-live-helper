@@ -46,6 +46,21 @@ let
     SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
   };
   cargoArtifacts = craneLib.buildDepsOnly common;
+  checkCommon = common // {
+    CARGO_PROFILE = "dev";
+    CARGO_PROFILE_DEV_DEBUG = "0";
+  };
+  checkArtifacts = craneLib.buildDepsOnly (
+    checkCommon
+    // {
+      pname = "${common.pname}-check";
+      doCheck = false;
+      buildPhaseCargoCommand = ''
+        cargoWithProfile check --locked --all-targets
+        cargoWithProfile test --locked --no-run
+      '';
+    }
+  );
   application = craneLib.buildPackage (
     common
     // {
@@ -56,6 +71,10 @@ let
         wrapProgram "$out/bin/bilibili-live-helper" --set SSL_CERT_FILE ${cacert}/etc/ssl/certs/ca-bundle.crt
       '';
       passthru.checks = linkFarm "bilibili-live-helper-checks" [
+        {
+          name = "package";
+          path = application;
+        }
         {
           name = "tests";
           path = tests;
@@ -72,15 +91,11 @@ let
       meta.mainProgram = "bilibili-live-helper";
     }
   );
-  checkArgs = common // {
-    inherit cargoArtifacts;
+  checkArgs = checkCommon // {
+    cargoArtifacts = checkArtifacts;
     src = checkSource;
   };
-  tests = craneLib.cargoTest (
-    checkArgs
-    // {
-    }
-  );
+  tests = craneLib.cargoTest checkArgs;
   clippy = craneLib.cargoClippy (
     checkArgs // { cargoClippyExtraArgs = "--all-targets -- -D warnings"; }
   );
