@@ -47,6 +47,19 @@ wreq 与 wreq-util 提供 Chrome131 TLS/HTTP2 配置和长连接池，应用不�
 
 ## 构建与生产
 
-Cargo.lock 固定依赖。`scripts/check.sh` 从 infra 根开发环境使用 fleet 固定的生产工具链检查当前 checkout，执行行为测试与严格 Clippy；
-源码禁止 unsafe、unwrap、expect、panic 和未完成实现。生产包由 fleet 固定 revision 通过 Crane 构建，测试与生产输入分离；wreq 同时负责账户与通知 HTTP 请求。
+Cargo.lock 固定依赖。`scripts/check.sh` 在本仓库运行格式、严格 Clippy 和行为测试，独立于 fleet。
+源码禁止 unsafe、unwrap、expect、panic 和未完成实现；wreq 同时负责账户与通知 HTTP 请求。
+
+GitHub Actions 检查 main/master 和 PR；推送与 Cargo.toml 版本一致的 `vX.Y.Z` tag 后，
+检查通过才构建并发布 `bilibili-live-helper-X.Y.Z-x86_64-linux.tar.gz` 和 SHA-256。
+发布包面向 Ubuntu 24.04 glibc，使用 SQLite 动态库；NixOS 消费方负责适配动态加载器、SQLite 和 CA 证书。
+
+```sh
+./scripts/check.sh
+# 更新 Cargo.toml/Cargo.lock 中的版本并提交后
+git tag v3.0.0
+git push origin v3.0.0
+```
+
+发布 tag 与资产不覆盖；修正发布时递增版本。生产安装版本、systemd 和凭据由 fleet 管理。
 Nix 提供二进制与必需启动配置；数据库、凭据和通知队列由应用管理。
