@@ -1,6 +1,6 @@
 # Bilibili Live Helper
 
-单账户直播任务应用，原生 Rust 程序，不监听网络端口。开发工具由 infra 根 `nix develop` 提供。
+单账户直播任务应用，原生 Rust 程序。开发工具由 infra 根 `nix develop` 提供。
 
 ## 配置与命令
 
@@ -24,6 +24,10 @@ cargo run -- run
 | `--database` | `BILIBILI_LIVE_HELPER_DATABASE` | `data/state.sqlite` |
 
 ntfy 配置包含 JSON 发布接口的 `server`、`topic` 和可选 `token`。不打印凭据或原始接口响应。
+
+设置 `BILIBILI_LIVE_HELPER_HEALTH_PORT` 后，在 `127.0.0.1` 提供 `/healthz`。
+接口复用轮询失败计数和最近成功时间：认证失效、连续三次失败或超过三个轮询周期未成功时返回 503，
+其余返回 200；超时计算包含请求耗时余量。响应不包含账号、任务内容或凭据，也不额外请求 B站。
 
 ## 调度与持久状态
 

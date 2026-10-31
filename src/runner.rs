@@ -20,6 +20,7 @@ pub struct Runner {
     api: Api,
     store: Store,
     config: Config,
+    health: crate::health::Health,
     rooms: Vec<Room>,
     watch: Option<Watch>,
     poll: Instant,
@@ -32,6 +33,9 @@ impl Runner {
         Ok(Self {
             api,
             store,
+            health: crate::health::Health::new(
+                config.poll_interval_seconds * 3 + config.request_timeout_seconds * 2,
+            ),
             config,
             rooms: Vec::new(),
             watch: None,
@@ -45,6 +49,9 @@ impl Runner {
         })
     }
     pub async fn run(mut self) -> Result<()> {
+        if let Ok(port) = std::env::var("BILIBILI_LIVE_HELPER_HEALTH_PORT") {
+            self.health.start(port.parse()?).await?;
+        }
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         loop {
             // Finish a possibly delivered request before shutdown. Its reservation
@@ -74,14 +81,17 @@ impl Runner {
                         self.store
                             .refresh(&self.day, &rooms, self.config.ntfy.is_some(), now())?;
                         self.rooms = rooms;
-                        self.store.health(None, self.config.ntfy.is_some())?;
+                        self.health
+                            .record(self.store.health(None, self.config.ntfy.is_some())?);
                     }
                     Err(failure) => {
                         tracing::warn!(?failure, "poll failed; live jobs suspended");
                         self.rooms.clear();
                         self.watch = None;
-                        self.store
-                            .health(Some(failure), self.config.ntfy.is_some())?;
+                        self.health.record(
+                            self.store
+                                .health(Some(failure), self.config.ntfy.is_some())?,
+                        );
                     }
                 }
                 self.poll = Instant::now()
@@ -222,8 +232,10 @@ impl Runner {
             self.watch = None;
         }
         if matches!(result, Err(Failure::Rejected(-101 | -102))) {
-            self.store
-                .health(result.err(), self.config.ntfy.is_some())?;
+            self.health.record(
+                self.store
+                    .health(result.err(), self.config.ntfy.is_some())?,
+            );
             self.rooms.clear();
             self.watch = None;
         }

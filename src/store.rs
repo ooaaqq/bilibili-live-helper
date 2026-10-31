@@ -195,7 +195,7 @@ impl Store {
         }
         Ok(())
     }
-    pub fn health(&mut self, failure: Option<Failure>, notify: bool) -> Result<()> {
+    pub fn health(&mut self, failure: Option<Failure>, notify: bool) -> Result<i64> {
         let tx = self.db.transaction()?;
         let (failures, alerted): (i64, bool) =
             tx.query_row("SELECT failures,alerted FROM meta", [], |r| {
@@ -243,7 +243,7 @@ impl Store {
             )?;
         }
         tx.commit()?;
-        Ok(())
+        Ok(failures)
     }
     pub fn pending(&self, now: i64) -> Result<Option<Message>> {
         Ok(self

@@ -1,10 +1,11 @@
 [package]
 name = "bilibili-live-helper"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2024"
 publish = false
 
 [dependencies]
+axum = "0.8.9"
 anyhow = "1"
 blake2 = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -18,7 +19,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
 sha2 = "0.11"
 sha3 = "0.12"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 url = { version = "2", features = ["serde"] }
@@ -27,7 +28,6 @@ wreq = { version = "0.16.1", features = ["json", "form", "query", "gzip", "brotl
 wreq-util = "0.2"
 
 [dev-dependencies]
-axum = "0.8.9"
 tempfile = "3"
 
 [lints.rust]
