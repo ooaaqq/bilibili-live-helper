@@ -26,6 +26,12 @@ pub struct Room {
     #[serde(rename = "area_v2_parent_id")]
     pub parent: i64,
 }
+#[derive(Debug, Default)]
+pub struct Discovery {
+    pub rooms: Vec<Room>,
+    pub offline: Vec<i64>,
+    pub unavailable: Vec<i64>,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Failure {
     Rejected(i64),
@@ -169,7 +175,7 @@ impl Api {
             .into();
         Ok(())
     }
-    pub async fn discover(&mut self, ids: &[i64]) -> std::result::Result<Vec<Room>, Failure> {
+    pub async fn discover(&mut self, ids: &[i64]) -> std::result::Result<Discovery, Failure> {
         let value = self
             .request(
                 Method::GET,
@@ -275,24 +281,30 @@ pub fn sign(fields: Vec<(String, String)>, key: &str, timestamp: i64) -> Vec<(St
     data.insert("sign".into(), signature);
     data.into_iter().collect()
 }
-pub fn decode_rooms(value: Value, ids: &[i64]) -> std::result::Result<Vec<Room>, Failure> {
+pub fn decode_rooms(value: Value, ids: &[i64]) -> std::result::Result<Discovery, Failure> {
     let object = value.as_object().ok_or(Failure::Invalid)?;
-    let mut rooms = Vec::new();
+    let mut discovery = Discovery::default();
     for uid in ids {
-        let raw = object.get(&uid.to_string()).ok_or(Failure::Invalid)?;
-        // Validate even offline entries so malformed data cannot fabricate stream endings.
-        let status = raw["live_status"].as_i64().ok_or(Failure::Invalid)?;
-        if status != 1 {
-            continue;
+        let raw = object.get(&uid.to_string()).unwrap_or(&Value::Null);
+        match raw["live_status"].as_i64() {
+            Some(0 | 2) => discovery.offline.push(*uid),
+            Some(1) => {
+                if let Ok(mut room) = serde_json::from_value::<Room>(raw.clone())
+                    && room.room_id > 0
+                    && !room.name.trim().is_empty()
+                    && room.area >= 0
+                    && room.parent >= 0
+                {
+                    room.uid = *uid;
+                    discovery.rooms.push(room);
+                } else {
+                    discovery.unavailable.push(*uid);
+                }
+            }
+            _ => discovery.unavailable.push(*uid),
         }
-        let mut room: Room = serde_json::from_value(raw.clone()).map_err(|_| Failure::Invalid)?;
-        if room.room_id <= 0 || room.name.is_empty() {
-            return Err(Failure::Invalid);
-        }
-        room.uid = *uid;
-        rooms.push(room);
     }
-    Ok(rooms)
+    Ok(discovery)
 }
 pub struct Heartbeat {
     uuid: String,

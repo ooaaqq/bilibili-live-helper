@@ -2,23 +2,31 @@ use axum::{Json, Router, http::StatusCode, routing::get};
 use tokio::sync::watch;
 
 pub struct Health {
-    state: watch::Sender<(Option<i64>, i64)>,
+    state: watch::Sender<State>,
     max_age: i64,
+}
+
+#[derive(Clone, Default)]
+struct State {
+    last_success: Option<i64>,
+    failures: i64,
+    unavailable_uids: Vec<i64>,
 }
 
 impl Health {
     pub fn new(max_age: i64) -> Self {
         Self {
-            state: watch::channel((None, 0)).0,
+            state: watch::channel(State::default()).0,
             max_age,
         }
     }
 
-    pub fn record(&self, failures: i64) {
+    pub fn record(&self, failures: i64, unavailable_uids: &[i64]) {
         self.state.send_modify(|state| {
-            state.1 = failures;
+            state.failures = failures;
+            state.unavailable_uids = unavailable_uids.to_vec();
             if failures == 0 {
-                state.0 = Some(crate::now());
+                state.last_success = Some(crate::now());
             }
         });
     }
@@ -29,11 +37,11 @@ impl Health {
         let state = self.state.clone();
         let max_age = self.max_age;
         let app = Router::new().route("/healthz", get(move || {
-            let (last_success, failures) = *state.borrow();
+            let State {last_success, failures, unavailable_uids} = state.borrow().clone();
             async move {
                 let ok = failures < 3 && last_success.is_some_and(|stamp| crate::now() - stamp <= max_age);
                 let code = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-                (code, Json(serde_json::json!({"ok":ok,"last_success":last_success,"failures":failures})))
+                (code, Json(serde_json::json!({"ok":ok,"last_success":last_success,"failures":failures,"degraded":!unavailable_uids.is_empty(),"unavailable_uids":unavailable_uids})))
             }
         }));
         tokio::spawn(async move {
@@ -55,13 +63,22 @@ mod tests {
         let url = format!("http://{}/healthz", health.start(0).await?);
         let client = wreq::Client::new();
         assert_eq!(client.get(&url).send().await?.status().as_u16(), 503);
-        health.record(0);
+        health.record(0, &[]);
         assert_eq!(client.get(&url).send().await?.status().as_u16(), 200);
-        health.record(3);
+        health.record(0, &[42]);
+        let response = client.get(&url).send().await?;
+        assert_eq!(response.status().as_u16(), 200);
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["degraded"], true);
+        assert_eq!(body["unavailable_uids"], serde_json::json!([42]));
+        health.record(3, &[42]);
         assert_eq!(client.get(&url).send().await?.status().as_u16(), 503);
-        health.state.send_replace((Some(0), 0));
+        health.state.send_replace(State {
+            last_success: Some(0),
+            ..State::default()
+        });
         assert_eq!(client.get(&url).send().await?.status().as_u16(), 503);
-        health.record(0);
+        health.record(0, &[]);
         assert_eq!(client.get(&url).send().await?.status().as_u16(), 200);
         Ok(())
     }

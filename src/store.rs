@@ -1,5 +1,5 @@
 use crate::{
-    api::{Failure, Room},
+    api::{Discovery, Failure, Room},
     config::Config,
 };
 use anyhow::{Result, ensure};
@@ -8,11 +8,11 @@ use serde_json::Value;
 use std::path::Path;
 
 const SCHEMA:&str="
-CREATE TABLE meta(id INTEGER PRIMARY KEY CHECK(id=1), day TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0, alerted INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE meta(id INTEGER PRIMARY KEY CHECK(id=1), day TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0, alerted INTEGER NOT NULL DEFAULT 0,danmaku_due INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE progress(day TEXT NOT NULL,uid INTEGER NOT NULL,name TEXT NOT NULL,likes INTEGER NOT NULL DEFAULT 0,likes_attempted INTEGER NOT NULL DEFAULT 0,danmaku INTEGER NOT NULL DEFAULT 0,danmaku_attempted INTEGER NOT NULL DEFAULT 0,watched INTEGER NOT NULL DEFAULT 0,watch_attempted INTEGER NOT NULL DEFAULT 0,likes_due INTEGER NOT NULL DEFAULT 0,danmaku_due INTEGER NOT NULL DEFAULT 0,completed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,uid),CHECK(likes<=likes_attempted AND danmaku<=danmaku_attempted AND watched<=watch_attempted));
 CREATE TABLE live(uid INTEGER PRIMARY KEY,room INTEGER NOT NULL,active INTEGER NOT NULL);
 CREATE TABLE outbox(id TEXT PRIMARY KEY,title TEXT NOT NULL,body TEXT NOT NULL,tag TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due INTEGER NOT NULL DEFAULT 0);
-PRAGMA user_version=1;";
+PRAGMA user_version=2;";
 pub struct Store {
     db: Connection,
 }
@@ -61,7 +61,16 @@ impl Store {
             tx.execute("INSERT INTO meta(id,day) VALUES(1,?)", [day])?;
             tx.commit()?;
         }
-        ensure!(version <= 1, "unsupported state schema");
+        ensure!(version <= 2, "unsupported state schema");
+        if version == 1 {
+            let tx = db.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE meta ADD COLUMN danmaku_due INTEGER NOT NULL DEFAULT 0;
+                UPDATE meta SET danmaku_due=(SELECT COALESCE(MAX(danmaku_due),0) FROM progress);
+                PRAGMA user_version=2;",
+            )?;
+            tx.commit()?;
+        }
         Ok(Self { db })
     }
     pub fn rollover(&mut self, day: &str, notify: bool) -> Result<()> {
@@ -80,20 +89,27 @@ impl Store {
                 params![
                     format!("watch-{old}"),
                     format!(
-                        "{old}\n已确认 {confirmed} 秒；结果不确定 {} 秒",
+                        "{old}\n已确认 {confirmed} 秒；未确认 {} 秒（含明确失败和结果不确定）",
                         attempted - confirmed
                     )
                 ],
             )?;
         }
-        tx.execute("DELETE FROM progress", [])?;
+        // Reset quotas without erasing cooldowns at midnight.
+        tx.execute("UPDATE progress SET day=?,likes=0,likes_attempted=0,danmaku=0,danmaku_attempted=0,watched=0,watch_attempted=0,completed=0", [day])?;
         tx.execute("UPDATE meta SET day=?", [day])?;
         tx.commit()?;
         Ok(())
     }
-    pub fn refresh(&mut self, day: &str, rooms: &[Room], notify: bool, now: i64) -> Result<()> {
+    pub fn refresh(
+        &mut self,
+        day: &str,
+        discovery: &Discovery,
+        notify: bool,
+        now: i64,
+    ) -> Result<()> {
         let tx = self.db.transaction()?;
-        for room in rooms {
+        for room in &discovery.rooms {
             let active: Option<(bool, i64)> = tx
                 .query_row(
                     "SELECT active,room FROM live WHERE uid=?",
@@ -113,8 +129,11 @@ impl Store {
             }
             tx.execute("INSERT INTO progress(day,uid,name) VALUES(?,?,?) ON CONFLICT(day,uid) DO UPDATE SET name=excluded.name",params![day,room.uid,room.name])?;
         }
-        tx.execute("UPDATE live SET active=0", [])?;
-        for room in rooms {
+        // Missing/malformed entries are unknown, not observed stream endings.
+        for uid in &discovery.offline {
+            tx.execute("UPDATE live SET active=0 WHERE uid=?", [uid])?;
+        }
+        for room in &discovery.rooms {
             tx.execute("INSERT INTO live VALUES(?,?,1) ON CONFLICT(uid) DO UPDATE SET active=1,room=excluded.room",params![room.uid,room.room_id])?;
         }
         tx.commit()?;
@@ -123,25 +142,52 @@ impl Store {
     pub fn progress(&self, day: &str, uid: i64) -> Result<Progress> {
         Ok(self.db.query_row("SELECT likes,likes_attempted,danmaku,danmaku_attempted,watched,watch_attempted,likes_due,danmaku_due,completed FROM progress WHERE day=? AND uid=?",params![day,uid],|r|Ok(Progress{likes:r.get(0)?,likes_attempted:r.get(1)?,danmaku:r.get(2)?,danmaku_attempted:r.get(3)?,watched:r.get(4)?,watch_attempted:r.get(5)?,likes_due:r.get(6)?,danmaku_due:r.get(7)?,completed:r.get(8)?}))?)
     }
-    pub fn reserve(&self, day: &str, uid: i64, action: Action, due: i64) -> Result<()> {
+    pub fn danmaku_due(&self) -> Result<i64> {
+        Ok(self
+            .db
+            .query_row("SELECT danmaku_due FROM meta", [], |r| r.get(0))?)
+    }
+    pub fn reserve(
+        &mut self,
+        day: &str,
+        uid: i64,
+        action: Action,
+        now: i64,
+        config: &Config,
+    ) -> Result<bool> {
         let (_, attempted, amount) = action.columns();
-        let due_column = match action {
-            Action::Like => "likes_due",
-            Action::Danmaku => "danmaku_due",
-            Action::Watch(_) => "likes_due",
+        ensure!(amount > 0, "invalid reservation amount");
+        let (limit, delay, cooldown) = match action {
+            Action::Like => (
+                config.like_request_count,
+                config.like_interval_seconds,
+                "likes_due<=?",
+            ),
+            Action::Danmaku => (
+                config.danmaku_count,
+                config.danmaku_interval_seconds,
+                "MAX(danmaku_due,(SELECT danmaku_due FROM meta))<=?",
+            ),
+            Action::Watch(_) => (config.watch_minutes * 60, 0, "0<=?"),
         };
-        let sql = if matches!(action, Action::Watch(_)) {
-            format!("UPDATE progress SET {attempted}={attempted}+? WHERE day=? AND uid=?")
-        } else {
-            format!(
-                "UPDATE progress SET {attempted}={attempted}+?,{due_column}={due} WHERE day=? AND uid=?"
-            )
+        let due = match action {
+            Action::Like => format!(",likes_due={}", now + delay),
+            Action::Danmaku => format!(",danmaku_due={}", now + delay),
+            Action::Watch(_) => String::new(),
         };
-        ensure!(
-            self.db.execute(&sql, params![amount, day, uid])? == 1,
-            "missing progress"
-        );
-        Ok(())
+        let tx = self.db.transaction()?;
+        let changed = tx.execute(&format!("UPDATE progress SET {attempted}={attempted}+?{due} WHERE day=? AND uid=? AND {attempted}+?<=? AND {cooldown}"), params![amount,day,uid,amount,limit,now])?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        if action == Action::Danmaku {
+            tx.execute(
+                "UPDATE meta SET danmaku_due=?",
+                [now + config.global_danmaku_interval_seconds],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
     pub fn settle(
         &mut self,
@@ -150,6 +196,7 @@ impl Store {
         action: Action,
         result: std::result::Result<(), Failure>,
         config: &Config,
+        now: i64,
     ) -> Result<()> {
         let (confirmed, attempted, amount) = action.columns();
         let tx = self.db.transaction()?;
@@ -161,7 +208,7 @@ impl Store {
                 )?;
             }
             Err(failure) => {
-                if !failure.ambiguous() {
+                if failure == Failure::Interrupted {
                     tx.execute(
                         &format!(
                             "UPDATE progress SET {attempted}={attempted}-? WHERE day=? AND uid=?"
@@ -169,10 +216,30 @@ impl Store {
                         params![amount, day, room.uid],
                     )?;
                 }
-                if config.ntfy.is_some() {
-                    tx.execute("INSERT INTO outbox(id,title,body,tag) VALUES(?,?,?,'warning') ON CONFLICT(id) DO UPDATE SET body=excluded.body,due=0,attempts=0",params![format!("task-{day}-{}-{confirmed}",room.uid),format!("「{}」任务异常",room.name),format!("{confirmed}: {failure}；结果{}",if failure.ambiguous(){"不确定，不重发该次请求"}else{"明确拒绝，稍后重新调度"})])?;
+                if config.ntfy.is_some() && failure != Failure::Interrupted {
+                    tx.execute("INSERT INTO outbox(id,title,body,tag) VALUES(?,?,?,'warning') ON CONFLICT(id) DO UPDATE SET body=excluded.body,due=0,attempts=0",params![format!("task-{day}-{}-{confirmed}",room.uid),format!("「{}」任务异常",room.name),format!("{confirmed}: {failure}；结果{}",if failure.ambiguous(){"不确定，不重发该次请求"}else{"明确拒绝，计入尝试额度"})])?;
                 }
             }
+        }
+        // Start cooldowns after the response too, so API queueing/latency cannot shorten them.
+        match action {
+            Action::Like => {
+                tx.execute(
+                    "UPDATE progress SET likes_due=MAX(likes_due,?) WHERE day=? AND uid=?",
+                    params![now + config.like_interval_seconds, day, room.uid],
+                )?;
+            }
+            Action::Danmaku => {
+                tx.execute(
+                    "UPDATE progress SET danmaku_due=MAX(danmaku_due,?) WHERE day=? AND uid=?",
+                    params![now + config.danmaku_interval_seconds, day, room.uid],
+                )?;
+                tx.execute(
+                    "UPDATE meta SET danmaku_due=MAX(danmaku_due,?)",
+                    [now + config.global_danmaku_interval_seconds],
+                )?;
+            }
+            Action::Watch(_) => {}
         }
         tx.commit()?;
         self.complete(day, room, config)
@@ -185,7 +252,7 @@ impl Store {
         {
             let tx = self.db.transaction()?;
             if config.ntfy.is_some() {
-                tx.execute("INSERT OR IGNORE INTO outbox(id,title,body,tag) VALUES(?,?,?,'white_check_mark')",params![format!("tasks-{day}-{}",room.uid),format!("「{}」每日互动任务结束",room.name),format!("点赞确认 {}/{} 批；弹幕确认 {}/{} 次。其余为结果不确定。",p.likes,p.likes_attempted,p.danmaku,p.danmaku_attempted)])?;
+                tx.execute("INSERT OR IGNORE INTO outbox(id,title,body,tag) VALUES(?,?,?,'white_check_mark')",params![format!("tasks-{day}-{}",room.uid),format!("「{}」每日互动任务结束",room.name),format!("点赞确认 {}/{} 批；弹幕确认 {}/{} 次。其余为未确认（含明确失败和结果不确定）。",p.likes,p.likes_attempted,p.danmaku,p.danmaku_attempted)])?;
             }
             tx.execute(
                 "UPDATE progress SET completed=1 WHERE day=? AND uid=?",
@@ -333,6 +400,10 @@ impl Store {
         }
         tx.execute(
             "UPDATE outbox SET id='health' WHERE id='bilibili-poll-health'",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE meta SET danmaku_due=(SELECT COALESCE(MAX(danmaku_due),0) FROM progress)",
             [],
         )?;
         tx.execute(

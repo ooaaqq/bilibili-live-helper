@@ -24,7 +24,6 @@ pub struct Runner {
     rooms: Vec<Room>,
     watch: Option<Watch>,
     poll: Instant,
-    danmaku_due: i64,
     day: String,
     notifier: wreq::Client,
 }
@@ -40,7 +39,6 @@ impl Runner {
             rooms: Vec::new(),
             watch: None,
             poll: Instant::now(),
-            danmaku_due: 0,
             day: day(now())?.to_string(),
             notifier: wreq::Client::builder()
                 .redirect(wreq::redirect::Policy::none())
@@ -77,13 +75,7 @@ impl Runner {
                     continue;
                 }
                 match result {
-                    Ok(rooms) => {
-                        self.store
-                            .refresh(&self.day, &rooms, self.config.ntfy.is_some(), now())?;
-                        self.rooms = rooms;
-                        self.health
-                            .record(self.store.health(None, self.config.ntfy.is_some())?);
-                    }
+                    Ok(discovery) => self.refresh(discovery, now())?,
                     Err(failure) => {
                         tracing::warn!(?failure, "poll failed; live jobs suspended");
                         self.rooms.clear();
@@ -91,6 +83,7 @@ impl Runner {
                         self.health.record(
                             self.store
                                 .health(Some(failure), self.config.ntfy.is_some())?,
+                            &[],
                         );
                     }
                 }
@@ -113,6 +106,7 @@ impl Runner {
             let timestamp = now();
             // Earliest due first; each room/action advances its own clock.
             let mut candidates = Vec::new();
+            let danmaku_due = self.store.danmaku_due()?;
             for room in &self.rooms {
                 self.store.complete(&self.day, room, &self.config)?;
                 let p = self.store.progress(&self.day, room.uid)?;
@@ -120,11 +114,7 @@ impl Runner {
                     candidates.push((p.likes_due, room.uid, Action::Like));
                 }
                 if p.danmaku_attempted < self.config.danmaku_count {
-                    candidates.push((
-                        p.danmaku_due.max(self.danmaku_due),
-                        room.uid,
-                        Action::Danmaku,
-                    ));
+                    candidates.push((p.danmaku_due.max(danmaku_due), room.uid, Action::Danmaku));
                 }
             }
             candidates.sort_by_key(|(due, uid, _)| (*due, *uid));
@@ -153,6 +143,24 @@ impl Runner {
                 self.execute(uid, action).await?;
             }
         }
+    }
+    fn refresh(&mut self, discovery: crate::api::Discovery, timestamp: i64) -> Result<()> {
+        if !discovery.unavailable.is_empty() {
+            tracing::warn!(uids=?discovery.unavailable, "live rooms missing or invalid; other rooms continue");
+        }
+        let failure = if discovery.rooms.is_empty() && discovery.offline.is_empty() {
+            Some(Failure::Invalid)
+        } else {
+            None
+        };
+        self.store
+            .refresh(&self.day, &discovery, self.config.ntfy.is_some(), timestamp)?;
+        self.health.record(
+            self.store.health(failure, self.config.ntfy.is_some())?,
+            &discovery.unavailable,
+        );
+        self.rooms = discovery.rooms;
+        Ok(())
     }
     fn schedule_watch(&mut self) -> Result<()> {
         if let Some(w) = &self.watch {
@@ -191,11 +199,6 @@ impl Runner {
         let Some(room) = self.rooms.iter().find(|r| r.uid == uid).cloned() else {
             return Ok(());
         };
-        let delay = match action {
-            Action::Like => self.config.like_interval_seconds,
-            Action::Danmaku => self.config.danmaku_interval_seconds,
-            Action::Watch(_) => self.config.poll_interval_seconds,
-        };
         let timestamp = now();
         // Do not report an interval extending beyond Shanghai midnight.
         if let Action::Watch(seconds) = action
@@ -203,18 +206,19 @@ impl Runner {
         {
             return Ok(());
         }
-        self.store
-            .reserve(&self.day, uid, action, timestamp + delay)?;
+        if !self
+            .store
+            .reserve(&self.day, uid, action, timestamp, &self.config)?
+        {
+            return Ok(());
+        }
         let result = match action {
             Action::Like => {
                 self.api
                     .like(&room, self.config.like_clicks_per_request)
                     .await
             }
-            Action::Danmaku => {
-                self.danmaku_due = timestamp + self.config.global_danmaku_interval_seconds;
-                self.api.danmaku(&room).await
-            }
+            Action::Danmaku => self.api.danmaku(&room).await,
             Action::Watch(seconds) => {
                 if let Some(w) = &self.watch {
                     debug_assert!(
@@ -227,7 +231,7 @@ impl Runner {
             }
         };
         self.store
-            .settle(&self.day, &room, action, result, &self.config)?;
+            .settle(&self.day, &room, action, result, &self.config, now())?;
         if matches!(action, Action::Watch(_)) && result.is_err() {
             self.watch = None;
         }
@@ -235,6 +239,7 @@ impl Runner {
             self.health.record(
                 self.store
                     .health(result.err(), self.config.ntfy.is_some())?,
+                &[],
             );
             self.rooms.clear();
             self.watch = None;

@@ -24,10 +24,23 @@ fn signatures_match_independent_python_vectors() {
     );
 }
 #[test]
-fn discovery_rejects_partial_or_malformed_snapshots() {
-    assert!(decode_rooms(json!({}), &[1]).is_err());
-    assert!(decode_rooms(json!({"1":{"live_status":true}}), &[1]).is_err());
-    assert!(decode_rooms(json!({"1":{"live_status":0}}), &[1]).is_ok_and(|r| r.is_empty()));
+fn discovery_isolates_missing_and_malformed_rooms_without_inventing_offline_status() -> Result<()> {
+    let live = json!({"room_id":2,"uname":"主播","title":"直播","live_status":1,"area_v2_id":1,"area_v2_parent_id":1});
+    let result = decode_rooms(
+        json!({"1":live,"2":{"live_status":0},"3":{"live_status":2},"5":null,"6":{"live_status":true},"7":{"live_status":3},"8":{"live_status":1,"room_id":0}}),
+        &[1, 2, 3, 4, 5, 6, 7, 8],
+    )?;
+    assert_eq!(
+        result.rooms.iter().map(|r| r.uid).collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(result.offline, vec![2, 3]);
+    assert_eq!(result.unavailable, vec![4, 5, 6, 7, 8]);
+    assert_eq!(decode_rooms(json!({}), &[1])?.unavailable, vec![1]);
+    for invalid in [Value::Null, json!([]), json!("error")] {
+        assert_eq!(decode_rooms(invalid, &[1]).err(), Some(Failure::Invalid));
+    }
+    Ok(())
 }
 #[test]
 fn heartbeat_uses_actual_area_stable_identity_and_midnight_boundary() {
