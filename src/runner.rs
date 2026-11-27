@@ -204,41 +204,39 @@ impl Runner {
         }
         Ok(())
     }
-    async fn execute(&mut self, uid: i64, action: Action) -> Result<()> {
-        let room = if matches!(action, Action::Danmaku) {
-            let Some(room_id) = self
+    async fn confirm_danmaku_room(&mut self, uid: i64) -> Option<Room> {
+        let room_id = self
+            .danmaku_rooms
+            .iter()
+            .find(|room| room.uid == uid)?
+            .room_id;
+        let room = match self.api.discover(&[uid]).await {
+            Ok(discovery) => discovery
                 .danmaku_rooms
-                .iter()
-                .find(|r| r.uid == uid)
-                .map(|r| r.room_id)
-            else {
-                return Ok(());
-            };
-            let fresh_room = match self.api.discover(&[uid]).await {
-                Ok(discovery) => discovery
-                    .danmaku_rooms
-                    .into_iter()
-                    .find(|r| r.room_id == room_id),
-                Err(failure) => {
-                    tracing::warn!(uid, ?failure, "danmaku room status could not be confirmed");
-                    None
-                }
-            };
-            let Some(room) = fresh_room else {
-                self.danmaku_rooms.retain(|r| r.uid != uid);
-                return Ok(());
-            };
-            if day(now())?.to_string() != self.day {
-                return Ok(());
+                .into_iter()
+                .find(|room| room.room_id == room_id),
+            Err(failure) => {
+                tracing::warn!(uid, ?failure, "danmaku room status could not be confirmed");
+                None
             }
-            room
-        } else {
-            let Some(room) = self.rooms.iter().find(|r| r.uid == uid).cloned() else {
-                return Ok(());
-            };
-            room
+        };
+        if room.is_none() {
+            self.danmaku_rooms.retain(|room| room.uid != uid);
+        }
+        room
+    }
+    async fn execute(&mut self, uid: i64, action: Action) -> Result<()> {
+        let room = match action {
+            Action::Danmaku => self.confirm_danmaku_room(uid).await,
+            _ => self.rooms.iter().find(|room| room.uid == uid).cloned(),
+        };
+        let Some(room) = room else {
+            return Ok(());
         };
         let timestamp = now();
+        if day(timestamp)?.to_string() != self.day {
+            return Ok(());
+        }
         // Do not report an interval extending beyond Shanghai midnight.
         if let Action::Watch(seconds) = action
             && seconds > (timestamp + 8 * 3600).rem_euclid(86400)
