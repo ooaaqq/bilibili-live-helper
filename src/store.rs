@@ -71,8 +71,31 @@ impl Store {
             )?;
             tx.commit()?;
         }
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS lef_sessions(room INTEGER PRIMARY KEY, started INTEGER NOT NULL);",
+        )?;
         Ok(Self { db })
     }
+    pub(crate) fn observe_lef_session(&mut self, room: i64, started: i64) -> Result<Option<i64>> {
+        let tx = self.db.transaction()?;
+        let previous: Option<i64> = tx
+            .query_row(
+                "SELECT started FROM lef_sessions WHERE room=?",
+                [room],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if previous.is_some_and(|value| value >= started) {
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO lef_sessions VALUES(?,?) ON CONFLICT(room) DO UPDATE SET started=excluded.started",
+            params![room, started],
+        )?;
+        tx.commit()?;
+        Ok(previous)
+    }
+
     pub fn rollover(&mut self, day: &str, notify: bool) -> Result<()> {
         let old: String = self
             .db

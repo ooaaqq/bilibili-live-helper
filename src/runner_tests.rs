@@ -11,6 +11,7 @@ fn watching_uses_one_slot_in_priority_order_and_never_repeats_reserved_time() ->
         name: format!("主播{uid}"),
         title: "演出".into(),
         live_status: 1,
+        live_time: 0,
         area: 1,
         parent: 1,
     };

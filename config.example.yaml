@@ -16,3 +16,9 @@ global_danmaku_interval_seconds: 3
 ntfy:
   server: https://ntfy.example
   topic: inbox
+
+# Optional LEF session markers. Supply ADMIN_TOKEN through the
+# BILIBILI_LIVE_HELPER_LEF_TOKEN_FILE environment variable.
+# lef:
+#   server: https://lef.example.com
+#   room_id: 25512443

@@ -27,10 +27,17 @@ pub struct Runner {
     poll: Instant,
     day: String,
     notifier: wreq::Client,
+    lef: Option<crate::lef::Markers>,
 }
 impl Runner {
     pub fn new(api: Api, store: Store, config: Config) -> Result<Self> {
+        let lef = config
+            .lef
+            .as_ref()
+            .map(crate::lef::Markers::new)
+            .transpose()?;
         Ok(Self {
+            lef,
             api,
             store,
             health: crate::health::Health::new(
@@ -78,7 +85,13 @@ impl Runner {
                     continue;
                 }
                 match result {
-                    Ok(discovery) => self.refresh(discovery, now())?,
+                    Ok(discovery) => {
+                        self.refresh(discovery, now())?;
+                        if let Some(lef) = &self.lef {
+                            lef.observe(&self.notifier, &mut self.store, &self.rooms)
+                                .await?;
+                        }
+                    }
                     Err(failure) => {
                         tracing::warn!(?failure, "poll failed; live jobs suspended");
                         self.rooms.clear();

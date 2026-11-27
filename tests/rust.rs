@@ -17,6 +17,7 @@ fn room() -> Room {
         name: "主播".into(),
         title: "标题".into(),
         live_status: 1,
+        live_time: 0,
         area: 1,
         parent: 1,
     }

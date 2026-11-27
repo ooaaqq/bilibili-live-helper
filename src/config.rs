@@ -26,6 +26,13 @@ pub struct Config {
     pub danmaku_interval_seconds: i64,
     pub global_danmaku_interval_seconds: i64,
     pub ntfy: Option<Ntfy>,
+    pub lef: Option<Lef>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lef {
+    pub server: url::Url,
+    pub room_id: i64,
 }
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
@@ -69,6 +76,19 @@ impl Config {
             self.watch_uids.is_empty() || self.watch_minutes > 0,
             "watch_minutes must be positive"
         );
+        if let Some(lef) = &self.lef {
+            ensure!(
+                lef.room_id > 0
+                    && lef.server.scheme() == "https"
+                    && lef.server.host_str().is_some()
+                    && lef.server.username().is_empty()
+                    && lef.server.password().is_none()
+                    && lef.server.query().is_none()
+                    && lef.server.fragment().is_none()
+                    && lef.server.path() == "/",
+                "invalid LEF configuration"
+            );
+        }
         if let Some(n) = &self.ntfy {
             ensure!(
                 matches!(n.server.scheme(), "http" | "https")

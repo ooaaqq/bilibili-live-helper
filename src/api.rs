@@ -21,6 +21,8 @@ pub struct Room {
     pub name: String,
     pub title: String,
     pub live_status: u32,
+    #[serde(default)]
+    pub live_time: i64,
     #[serde(rename = "area_v2_id")]
     pub area: i64,
     #[serde(rename = "area_v2_parent_id")]

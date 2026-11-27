@@ -65,6 +65,7 @@ fn heartbeat_uses_actual_area_stable_identity_and_midnight_boundary() {
         name: "name".into(),
         title: "title".into(),
         live_status: 1,
+        live_time: 0,
         area: 371,
         parent: 9,
     };
