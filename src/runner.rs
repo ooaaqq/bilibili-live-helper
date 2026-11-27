@@ -22,6 +22,7 @@ pub struct Runner {
     config: Config,
     health: crate::health::Health,
     rooms: Vec<Room>,
+    offline_rooms: Vec<Room>,
     watch: Option<Watch>,
     poll: Instant,
     day: String,
@@ -37,6 +38,7 @@ impl Runner {
             ),
             config,
             rooms: Vec::new(),
+            offline_rooms: Vec::new(),
             watch: None,
             poll: Instant::now(),
             day: day(now())?.to_string(),
@@ -59,6 +61,7 @@ impl Runner {
             if current != self.day {
                 self.watch = None;
                 self.rooms.clear();
+                self.offline_rooms.clear();
                 self.poll = Instant::now();
                 self.day = current;
             }
@@ -79,6 +82,7 @@ impl Runner {
                     Err(failure) => {
                         tracing::warn!(?failure, "poll failed; live jobs suspended");
                         self.rooms.clear();
+                        self.offline_rooms.clear();
                         self.watch = None;
                         self.health.record(
                             self.store
@@ -113,6 +117,10 @@ impl Runner {
                 if p.likes_attempted < self.config.like_request_count {
                     candidates.push((p.likes_due, room.uid, Action::Like));
                 }
+            }
+            for room in &self.offline_rooms {
+                self.store.complete(&self.day, room, &self.config)?;
+                let p = self.store.progress(&self.day, room.uid)?;
                 if p.danmaku_attempted < self.config.danmaku_count {
                     candidates.push((p.danmaku_due.max(danmaku_due), room.uid, Action::Danmaku));
                 }
@@ -160,6 +168,7 @@ impl Runner {
             &discovery.unavailable,
         );
         self.rooms = discovery.rooms;
+        self.offline_rooms = discovery.offline_rooms;
         Ok(())
     }
     fn schedule_watch(&mut self) -> Result<()> {
@@ -196,8 +205,38 @@ impl Runner {
         Ok(())
     }
     async fn execute(&mut self, uid: i64, action: Action) -> Result<()> {
-        let Some(room) = self.rooms.iter().find(|r| r.uid == uid).cloned() else {
-            return Ok(());
+        let room = if matches!(action, Action::Danmaku) {
+            let Some(room_id) = self
+                .offline_rooms
+                .iter()
+                .find(|r| r.uid == uid)
+                .map(|r| r.room_id)
+            else {
+                return Ok(());
+            };
+            let fresh_room = match self.api.discover(&[uid]).await {
+                Ok(discovery) => discovery
+                    .offline_rooms
+                    .into_iter()
+                    .find(|r| r.room_id == room_id),
+                Err(failure) => {
+                    tracing::warn!(uid, ?failure, "danmaku room status could not be confirmed");
+                    None
+                }
+            };
+            let Some(room) = fresh_room else {
+                self.offline_rooms.retain(|r| r.uid != uid);
+                return Ok(());
+            };
+            if day(now())?.to_string() != self.day {
+                return Ok(());
+            }
+            room
+        } else {
+            let Some(room) = self.rooms.iter().find(|r| r.uid == uid).cloned() else {
+                return Ok(());
+            };
+            room
         };
         let timestamp = now();
         // Do not report an interval extending beyond Shanghai midnight.
@@ -242,6 +281,7 @@ impl Runner {
                 &[],
             );
             self.rooms.clear();
+            self.offline_rooms.clear();
             self.watch = None;
         }
         Ok(())

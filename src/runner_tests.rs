@@ -96,3 +96,31 @@ async fn partial_discovery_keeps_other_tasks_running_and_all_unknown_remains_unh
     assert_eq!(client.get(&url).send().await?.status().as_u16(), 200);
     Ok(())
 }
+
+#[tokio::test]
+async fn live_rooms_do_not_send_danmaku_and_offline_rooms_do_not_like() -> Result<()> {
+    let mut config: Config = serde_yaml_ng::from_str(include_str!("../config.example.yaml"))?;
+    config.include_uids = vec![1, 2];
+    config.watch_uids = vec![2];
+    let day = day(now())?.to_string();
+    let store = Store::open(std::path::Path::new(":memory:"), &day)?;
+    let api = Api::new("test-key".into(), &config)?;
+    let mut runner = Runner::new(api, store, config)?;
+    let room = |id, status| {
+        serde_json::json!({
+            "room_id": id, "uname": "主播", "title": "", "live_status": status,
+            "area_v2_id": 1, "area_v2_parent_id": 1
+        })
+    };
+    runner.refresh(
+        crate::api::decode_rooms(serde_json::json!({"1":room(11,1),"2":room(22,0)}), &[1, 2])?,
+        now(),
+    )?;
+    runner.execute(1, Action::Danmaku).await?;
+    runner.execute(2, Action::Like).await?;
+    runner.schedule_watch()?;
+    assert!(runner.watch.is_none());
+    assert_eq!(runner.store.progress(&day, 1)?.danmaku_attempted, 0);
+    assert_eq!(runner.store.progress(&day, 2)?.likes_attempted, 0);
+    Ok(())
+}

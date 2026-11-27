@@ -127,6 +127,8 @@ impl Store {
                     ],
                 )?;
             }
+        }
+        for room in discovery.rooms.iter().chain(&discovery.offline_rooms) {
             tx.execute("INSERT INTO progress(day,uid,name) VALUES(?,?,?) ON CONFLICT(day,uid) DO UPDATE SET name=excluded.name",params![day,room.uid,room.name])?;
         }
         // Missing/malformed entries are unknown, not observed stream endings.

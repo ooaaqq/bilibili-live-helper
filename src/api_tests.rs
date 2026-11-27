@@ -26,8 +26,12 @@ fn signatures_match_independent_python_vectors() {
 #[test]
 fn discovery_isolates_missing_and_malformed_rooms_without_inventing_offline_status() -> Result<()> {
     let live = json!({"room_id":2,"uname":"主播","title":"直播","live_status":1,"area_v2_id":1,"area_v2_parent_id":1});
+    let mut offline = live.clone();
+    offline["live_status"] = json!(0);
+    let mut replay = live.clone();
+    replay["live_status"] = json!(2);
     let result = decode_rooms(
-        json!({"1":live,"2":{"live_status":0},"3":{"live_status":2},"5":null,"6":{"live_status":true},"7":{"live_status":3},"8":{"live_status":1,"room_id":0}}),
+        json!({"1":live,"2":offline,"3":replay,"5":null,"6":{"live_status":true},"7":{"live_status":3},"8":{"live_status":1,"room_id":0}}),
         &[1, 2, 3, 4, 5, 6, 7, 8],
     )?;
     assert_eq!(
@@ -35,6 +39,17 @@ fn discovery_isolates_missing_and_malformed_rooms_without_inventing_offline_stat
         vec![1]
     );
     assert_eq!(result.offline, vec![2, 3]);
+    assert_eq!(
+        result
+            .offline_rooms
+            .iter()
+            .map(|r| r.uid)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    let offline_without_room = decode_rooms(json!({"2":{"live_status":0}}), &[2])?;
+    assert_eq!(offline_without_room.offline, vec![2]);
+    assert!(offline_without_room.offline_rooms.is_empty());
     assert_eq!(result.unavailable, vec![4, 5, 6, 7, 8]);
     assert_eq!(decode_rooms(json!({}), &[1])?.unavailable, vec![1]);
     for invalid in [Value::Null, json!([]), json!("error")] {
