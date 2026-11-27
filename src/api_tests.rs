@@ -41,15 +41,15 @@ fn discovery_isolates_missing_and_malformed_rooms_without_inventing_offline_stat
     assert_eq!(result.offline, vec![2, 3]);
     assert_eq!(
         result
-            .offline_rooms
+            .danmaku_rooms
             .iter()
             .map(|r| r.uid)
             .collect::<Vec<_>>(),
-        vec![2]
+        vec![2, 3]
     );
     let offline_without_room = decode_rooms(json!({"2":{"live_status":0}}), &[2])?;
     assert_eq!(offline_without_room.offline, vec![2]);
-    assert!(offline_without_room.offline_rooms.is_empty());
+    assert!(offline_without_room.danmaku_rooms.is_empty());
     assert_eq!(result.unavailable, vec![4, 5, 6, 7, 8]);
     assert_eq!(decode_rooms(json!({}), &[1])?.unavailable, vec![1]);
     for invalid in [Value::Null, json!([]), json!("error")] {

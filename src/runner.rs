@@ -22,7 +22,7 @@ pub struct Runner {
     config: Config,
     health: crate::health::Health,
     rooms: Vec<Room>,
-    offline_rooms: Vec<Room>,
+    danmaku_rooms: Vec<Room>,
     watch: Option<Watch>,
     poll: Instant,
     day: String,
@@ -38,7 +38,7 @@ impl Runner {
             ),
             config,
             rooms: Vec::new(),
-            offline_rooms: Vec::new(),
+            danmaku_rooms: Vec::new(),
             watch: None,
             poll: Instant::now(),
             day: day(now())?.to_string(),
@@ -61,7 +61,7 @@ impl Runner {
             if current != self.day {
                 self.watch = None;
                 self.rooms.clear();
-                self.offline_rooms.clear();
+                self.danmaku_rooms.clear();
                 self.poll = Instant::now();
                 self.day = current;
             }
@@ -82,7 +82,7 @@ impl Runner {
                     Err(failure) => {
                         tracing::warn!(?failure, "poll failed; live jobs suspended");
                         self.rooms.clear();
-                        self.offline_rooms.clear();
+                        self.danmaku_rooms.clear();
                         self.watch = None;
                         self.health.record(
                             self.store
@@ -118,7 +118,7 @@ impl Runner {
                     candidates.push((p.likes_due, room.uid, Action::Like));
                 }
             }
-            for room in &self.offline_rooms {
+            for room in &self.danmaku_rooms {
                 self.store.complete(&self.day, room, &self.config)?;
                 let p = self.store.progress(&self.day, room.uid)?;
                 if p.danmaku_attempted < self.config.danmaku_count {
@@ -168,7 +168,7 @@ impl Runner {
             &discovery.unavailable,
         );
         self.rooms = discovery.rooms;
-        self.offline_rooms = discovery.offline_rooms;
+        self.danmaku_rooms = discovery.danmaku_rooms;
         Ok(())
     }
     fn schedule_watch(&mut self) -> Result<()> {
@@ -207,7 +207,7 @@ impl Runner {
     async fn execute(&mut self, uid: i64, action: Action) -> Result<()> {
         let room = if matches!(action, Action::Danmaku) {
             let Some(room_id) = self
-                .offline_rooms
+                .danmaku_rooms
                 .iter()
                 .find(|r| r.uid == uid)
                 .map(|r| r.room_id)
@@ -216,7 +216,7 @@ impl Runner {
             };
             let fresh_room = match self.api.discover(&[uid]).await {
                 Ok(discovery) => discovery
-                    .offline_rooms
+                    .danmaku_rooms
                     .into_iter()
                     .find(|r| r.room_id == room_id),
                 Err(failure) => {
@@ -225,7 +225,7 @@ impl Runner {
                 }
             };
             let Some(room) = fresh_room else {
-                self.offline_rooms.retain(|r| r.uid != uid);
+                self.danmaku_rooms.retain(|r| r.uid != uid);
                 return Ok(());
             };
             if day(now())?.to_string() != self.day {
@@ -281,7 +281,7 @@ impl Runner {
                 &[],
             );
             self.rooms.clear();
-            self.offline_rooms.clear();
+            self.danmaku_rooms.clear();
             self.watch = None;
         }
         Ok(())

@@ -30,7 +30,7 @@ pub struct Room {
 pub struct Discovery {
     pub rooms: Vec<Room>,
     pub offline: Vec<i64>,
-    pub offline_rooms: Vec<Room>,
+    pub danmaku_rooms: Vec<Room>,
     pub unavailable: Vec<i64>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -288,17 +288,16 @@ pub fn decode_rooms(value: Value, ids: &[i64]) -> std::result::Result<Discovery,
     for uid in ids {
         let raw = object.get(&uid.to_string()).unwrap_or(&Value::Null);
         match raw["live_status"].as_i64() {
-            Some(0) => {
+            Some(0 | 2) => {
                 discovery.offline.push(*uid);
                 if let Ok(mut room) = serde_json::from_value::<Room>(raw.clone())
                     && room.room_id > 0
                     && !room.name.trim().is_empty()
                 {
                     room.uid = *uid;
-                    discovery.offline_rooms.push(room);
+                    discovery.danmaku_rooms.push(room);
                 }
             }
-            Some(2) => discovery.offline.push(*uid),
             Some(1) => {
                 if let Ok(mut room) = serde_json::from_value::<Room>(raw.clone())
                     && room.room_id > 0

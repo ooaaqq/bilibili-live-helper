@@ -98,7 +98,7 @@ async fn partial_discovery_keeps_other_tasks_running_and_all_unknown_remains_unh
 }
 
 #[tokio::test]
-async fn live_rooms_do_not_send_danmaku_and_offline_rooms_do_not_like() -> Result<()> {
+async fn danmaku_pauses_on_live_transition_without_resetting_the_daily_budget() -> Result<()> {
     let mut config: Config = serde_yaml_ng::from_str(include_str!("../config.example.yaml"))?;
     config.include_uids = vec![1, 2];
     config.watch_uids = vec![2];
@@ -122,5 +122,29 @@ async fn live_rooms_do_not_send_danmaku_and_offline_rooms_do_not_like() -> Resul
     assert!(runner.watch.is_none());
     assert_eq!(runner.store.progress(&day, 1)?.danmaku_attempted, 0);
     assert_eq!(runner.store.progress(&day, 2)?.likes_attempted, 0);
+
+    // A room can move from closed to carousel, then to a live session.
+    runner.refresh(
+        crate::api::decode_rooms(serde_json::json!({"2":room(22,2)}), &[2])?,
+        now(),
+    )?;
+    assert_eq!(runner.danmaku_rooms.first().map(|room| room.uid), Some(2));
+    assert!(
+        runner
+            .store
+            .reserve(&day, 2, Action::Danmaku, now(), &runner.config)?
+    );
+    runner.refresh(
+        crate::api::decode_rooms(serde_json::json!({"2":room(22,1)}), &[2])?,
+        now(),
+    )?;
+    assert!(runner.danmaku_rooms.is_empty());
+    runner.execute(2, Action::Danmaku).await?;
+    runner.refresh(
+        crate::api::decode_rooms(serde_json::json!({"2":room(22,0)}), &[2])?,
+        now(),
+    )?;
+    assert_eq!(runner.danmaku_rooms.first().map(|room| room.uid), Some(2));
+    assert_eq!(runner.store.progress(&day, 2)?.danmaku_attempted, 1);
     Ok(())
 }
