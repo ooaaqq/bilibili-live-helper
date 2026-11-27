@@ -28,6 +28,32 @@ impl Markers {
         })
     }
 
+    pub(crate) fn start_bridge(
+        &self,
+        opening: tokio::sync::mpsc::Sender<()>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let mut url = self.config.bridge.clone()?;
+        let room = self.config.room_id;
+        url.query_pairs_mut()
+            .append_pair("rooms", &room.to_string());
+        Some(tokio::spawn(async move {
+            let client = wreq::Client::builder()
+                .redirect(wreq::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build();
+            let Ok(client) = client else {
+                tracing::warn!("LEF bridge client unavailable; using HTTP polling");
+                return;
+            };
+            loop {
+                if let Err(error) = listen(&client, &url, room, &opening).await {
+                    tracing::warn!(%error, "LEF bridge unavailable; using HTTP polling");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            }
+        }))
+    }
+
     pub(crate) async fn observe(
         &self,
         client: &wreq::Client,
@@ -82,6 +108,50 @@ impl Markers {
         ensure!(result["success"] == true, "LEF upload not accepted");
         Ok(())
     }
+}
+
+async fn listen(
+    client: &wreq::Client,
+    url: &url::Url,
+    room: i64,
+    opening: &tokio::sync::mpsc::Sender<()>,
+) -> Result<()> {
+    use std::time::Duration;
+    use wreq::ws::message::Message;
+    let mut socket = tokio::time::timeout(Duration::from_secs(10), async {
+        client
+            .websocket(url.as_str())
+            .protocols(["client"])
+            .send()
+            .await?
+            .into_websocket()
+            .await
+    })
+    .await??;
+    tracing::info!(room_id = room, "LEF bridge connected");
+    while let Some(message) = tokio::time::timeout(Duration::from_secs(35), socket.recv()).await? {
+        match message? {
+            Message::Text(text) => {
+                if text.as_str() == "ping" {
+                    socket.send(Message::text("pong")).await?;
+                    continue;
+                }
+                if let Ok(event) = serde_json::from_str::<Value>(text.as_str()) {
+                    if event["type"] == "ping" {
+                        socket.send(Message::text(r#"{"type":"pong"}"#)).await?;
+                    } else if event["type"] == "live-start"
+                        && event["origin"].as_i64() == Some(room)
+                        && event["mock"].as_bool() != Some(true)
+                    {
+                        let _ = opening.try_send(());
+                    }
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn archive(room: &Room, avatar: &str) -> Result<Vec<u8>> {

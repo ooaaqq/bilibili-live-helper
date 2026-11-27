@@ -31,6 +31,7 @@ pub struct Config {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lef {
+    pub bridge: Option<url::Url>,
     pub server: url::Url,
     pub room_id: i64,
 }
@@ -87,6 +88,17 @@ impl Config {
                     && lef.server.fragment().is_none()
                     && lef.server.path() == "/",
                 "invalid LEF configuration"
+            );
+            ensure!(
+                lef.bridge
+                    .as_ref()
+                    .is_none_or(|url| matches!(url.scheme(), "ws" | "wss")
+                        && url.host_str().is_some()
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                        && url.query().is_none()
+                        && url.fragment().is_none()),
+                "invalid LEF bridge URL"
             );
         }
         if let Some(n) = &self.ntfy {

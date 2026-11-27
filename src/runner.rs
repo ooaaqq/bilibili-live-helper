@@ -60,10 +60,15 @@ impl Runner {
             self.health.start(port.parse()?).await?;
         }
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let (opening_sender, mut opening) = tokio::sync::mpsc::channel(1);
+        let _bridge = self
+            .lef
+            .as_ref()
+            .and_then(|lef| lef.start_bridge(opening_sender));
         loop {
             // Finish a possibly delivered request before shutdown. Its reservation
             // is durable even if systemd ultimately kills the process.
-            tokio::select! {biased;_=term.recv()=>return Ok(()),result=tokio::signal::ctrl_c()=>{result?;return Ok(())},_=tokio::time::sleep(Duration::from_millis(100))=>{}}
+            tokio::select! {biased;_=term.recv()=>return Ok(()),result=tokio::signal::ctrl_c()=>{result?;return Ok(())},Some(())=opening.recv()=>self.poll=Instant::now(),_=tokio::time::sleep(Duration::from_millis(100))=>{}}
             let current = day(now())?.to_string();
             if current != self.day {
                 self.watch = None;
