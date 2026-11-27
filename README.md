@@ -99,7 +99,7 @@ git push origin HEAD "$tag"
 监控名单及 LEF 采集范围内。通过 `BILIBILI_LIVE_HELPER_LEF_TOKEN_FILE` 指定令牌文件，
 文件内容为令牌或 `ADMIN_TOKEN=…`。使用 systemd 凭据传入。
 
-首次看到有效的开播时间只建立基线。下一次看到新的实际开播时间时，上传一个包含
+启动时记录已观察到的房间状态。检测到下一次开播时，上传一个包含
 各 100 元的 SC 和礼物标记的 LCA。标记按本场开播时间排列，正文使用本场的北京时间月日。
 两个标记的用户名为空，粉丝牌为已点亮的 GOGO队 99 级，头像取 LEF 同域的
 `/marker-avatar.png`。两条标记可能计入控制台统计。

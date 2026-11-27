@@ -33,12 +33,19 @@ impl Markers {
         client: &wreq::Client,
         store: &mut Store,
         rooms: &[Room],
+        non_live_rooms: &[Room],
     ) -> Result<()> {
         let Some(room) = rooms.iter().find(|room| {
             room.room_id == self.config.room_id
                 && room.live_time > 0
                 && room.live_time <= crate::now()
         }) else {
+            if non_live_rooms
+                .iter()
+                .any(|room| room.room_id == self.config.room_id)
+            {
+                store.observe_lef_session(self.config.room_id, 0)?;
+            }
             return Ok(());
         };
         if store

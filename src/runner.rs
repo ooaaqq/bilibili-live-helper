@@ -88,8 +88,13 @@ impl Runner {
                     Ok(discovery) => {
                         self.refresh(discovery, now())?;
                         if let Some(lef) = &self.lef {
-                            lef.observe(&self.notifier, &mut self.store, &self.rooms)
-                                .await?;
+                            lef.observe(
+                                &self.notifier,
+                                &mut self.store,
+                                &self.rooms,
+                                &self.danmaku_rooms,
+                            )
+                            .await?;
                         }
                     }
                     Err(failure) => {
